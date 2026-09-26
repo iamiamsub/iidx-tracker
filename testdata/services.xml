@@ -1,0 +1,1 @@
+<response><services expire="10800" method="get" mode="operation" status="0"><item name="ntp" url="ntp://pool.ntp.org/"/><item name="keepalive" url="http://127.0.0.1/core/keepalive?pa=127.0.0.1"/><item name="cardmng" url="http://10.0.0.5:8083"/><item name="local" url="http://10.0.0.5:8083/core"/></services></response>

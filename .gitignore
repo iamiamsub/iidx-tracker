@@ -1,0 +1,24 @@
+# Build outputs
+/dist/
+/tracker_link/build/
+*.exe
+*.exe~
+
+# This PC's data and settings: the database holds cards, IDs and play history,
+# config.json the server addresses, build.local.ps1 local tool paths
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.bak
+/config.json
+/build.local.ps1
+
+# Working notes, kept on this PC only
+/TODO.md
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

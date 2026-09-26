@@ -1,0 +1,19 @@
+<response>
+    <IIDX33pc status="0">
+        <pcdata bgnasst="0" category="6" d_auto_adjust="0" d_auto_scrach="0" d_camera_layout="0" d_classic_hispeed="0" d_disp_judge="0" d_gauge_disp="0" d_ghost_score="0" d_gno="0" d_graph_score="0" d_gtype="0" d_hispeed="0" d_judge="0" d_judgeAdj="0" d_lane_brignt="0" d_laneobj_brignt="0" d_liflen="0" d_notes="0" d_opstyle="0" d_pace="0" d_sdlen="0" d_sdtype="0" d_sorttype="0" d_sub_gno="0" d_timing="0" d_timing_split="0" d_tsujigiri_disp="0" d_visualization="0" dach="192" dp_opt="1048577" dp_opt2="1048577" dpnum="0" gpos="0" id="12345678" idstr="1234-5678" mode="0" movie_thumbnail="0" name="DJTEST" naviflg="0" ngrade="3" pid="13" player_kind="0" pmode="0" rtype="0" s_auto_adjust="0" s_auto_scrach="0" s_camera_layout="0" s_classic_hispeed="0" s_disp_judge="0" s_gauge_disp="0" s_ghost_score="0" s_gno="27" s_graph_score="0" s_gtype="0" s_hispeed="0" s_judge="0" s_judgeAdj="0" s_lane_brignt="0" s_laneobj_brignt="0" s_liflen="90" s_notes="0" s_opstyle="1" s_pace="0" s_sdlen="0" s_sdtype="0" s_sorttype="0" s_sub_gno="0" s_timing="0" s_timing_split="0" s_tsujigiri_disp="1" s_visualization="1" sach="4598" sp_opt="1048704" spnum="26"/>
+        <grade dgid="-1" sgid="16">
+            <g __type="u8" __count="4">0 16 4 100</g>
+        </grade>
+        <notes_radar style="0">
+            <radar_score __type="s32" __count="6">18824 19089 16111 18209 19034 18999</radar_score>
+        </notes_radar>
+        <notes_radar style="1">
+            <radar_score __type="s32" __count="6">4957 4580 1110 1075 2189 5630</radar_score>
+        </notes_radar>
+        <arena_data play_num="2" play_num_dp="1" play_num_sp="1" prev_best_class_dp="19" prev_best_class_sp="19">
+            <achieve_data arena_class="19" best_top_class_continuing="0" best_winning_streak_count="0" counterattack_num="0" mission_clear_num="0" now_top_class_continuing="0" now_winning_streak_count="0" perfect_win_count="0" play_style="0" rating_value="20" win_count="0"/>
+            <achieve_data arena_class="19" best_top_class_continuing="0" best_winning_streak_count="0" counterattack_num="0" mission_clear_num="0" now_top_class_continuing="0" now_winning_streak_count="0" perfect_win_count="0" play_style="1" rating_value="20" win_count="0"/>
+            <default_chat/>
+        </arena_data>
+        </IIDX33pc>
+</response>

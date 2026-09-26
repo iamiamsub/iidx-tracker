@@ -1,0 +1,10 @@
+<call model="LDJ:J:D:S:2026081900" srcid="00010203040506070809" tag="oeUwAPKu">
+    <IIDX33pc bgnasst="0" bookkeep="0" category="6" ccode="JP" cid="E004000000000001" cltype="0" ctype="1" d_achi="192" d_auto_adjust="0" d_auto_scrach="0" d_camera_layout="0" d_classic_hispeed="0" d_disp_judge="0" d_gauge_disp="0" d_ghost_score="0" d_gno="0" d_graph_score="0" d_gtype="0" d_hispeed="0.000000" d_judge="0" d_judgeAdj="0" d_lane_brignt="0" d_laneobj_brignt="0" d_lift="0" d_notes="0.000000" d_opstyle="0" d_pace="0" d_sdlen="0" d_sdtype="0" d_sorttype="0" d_sub_gno="0" d_timing="0" d_timing_split="0" d_tsujigiri_disp="0" d_visualization="0" dp_opt="1048577" dp_opt2="1048577" gpos="0" iidxid="12345678" lid="ea" method="save" mode="6" movie_thumbnail="0" naviflg="0" ngrade="4" pmode="0" rtype="0" s_achi="4697" s_auto_adjust="0" s_auto_scrach="0" s_camera_layout="0" s_classic_hispeed="0" s_disp_judge="0" s_gauge_disp="0" s_ghost_score="0" s_gno="27" s_graph_score="0" s_gtype="0" s_hispeed="0.000000" s_judge="0" s_judgeAdj="0" s_lane_brignt="0" s_laneobj_brignt="0" s_lift="90" s_notes="0.000000" s_opstyle="1" s_pace="0" s_sdlen="0" s_sdtype="0" s_sorttype="0" s_sub_gno="0" s_timing="0" s_timing_split="0" s_tsujigiri_disp="1" s_visualization="1" sp_opt="1048704">
+        <lightning_play_data/>
+        <lightning_setting assistant_chara="0" assistant_disp_type="1" assistant_last_tab="0" brightness_bg="2" brightness_concentration="2" headphone_vol="10" keyboard_kind="11" resistance_dp_left="4" resistance_dp_right="4" resistance_sp_left="4" resistance_sp_right="4">
+            <slider __type="s32" __count="7">7 7 7 7 7 15 15</slider>
+            <light __type="bool" __count="10">1 1 1 1 1 1 1 1 1 1</light>
+            <concentration __type="bool">1</concentration>
+        </lightning_setting>
+        </IIDX33pc>
+</call>
