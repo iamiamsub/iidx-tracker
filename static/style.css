@@ -39,7 +39,11 @@ header {
 nav { display: flex; gap: 4px; flex-wrap: wrap; }
 nav a { color: var(--dim); padding: 6px 12px; border-radius: 7px; }
 nav a.active, nav a:hover { color: var(--text); background: var(--panel2); text-decoration: none; }
-.player-pick { margin-left: auto; display: flex; gap: 8px; align-items: center; color: var(--dim); }
+.menu { display: contents; } /* wide screens: its parts sit in the header row */
+.picks { margin-left: auto; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.player-pick { display: flex; gap: 8px; align-items: center; color: var(--dim); }
+.player-pick[hidden] { display: none; }
+.menu-btn { display: none; margin-left: auto; font-size: 18px; line-height: 1; padding: 6px 12px; }
 
 main { max-width: 1280px; margin: 0 auto; padding: 20px; }
 h1 { font-size: 22px; margin: 4px 0 16px; }
@@ -78,6 +82,11 @@ th.sort:hover { color: var(--text); }
 tbody tr:hover { background: #20263a; }
 tr.click { cursor: pointer; }
 td.title { white-space: normal; min-width: 220px; }
+/* the song list draws only the rows on screen, so every row is one line high */
+#songs td.title { white-space: nowrap; max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+#songs td.title div { overflow: hidden; text-overflow: ellipsis; }
+#songs tr.pad td { padding: 0; border: 0; }
+#songs tbody td { line-height: 18px; } /* a fallback font must not make a row taller */
 
 .lamp { display: inline-block; width: 10px; height: 22px; border-radius: 3px; vertical-align: middle; }
 .lamp-0 { background: #3a3f4b; }
@@ -115,6 +124,8 @@ td.title { white-space: normal; min-width: 220px; }
 .pill.tdj { border-color: #7a4bd6; color: #cbb3ff; }
 .pill.omni { border-color: #b0467a; color: #ffb3d6; }
 .pill.analyze { border-color: #b08a2a; color: #ffd35c; padding: 0 6px; font-size: 11px; margin-left: 4px; }
+.pill.dxtra { border-color: #2a8fb0; color: #9fe3ff; }
+.pill.set { border-color: #2a8fb0; color: #9fe3ff; padding: 0 6px; font-size: 11px; margin-left: 4px; }
 
 .chart-box { position: relative; }
 .chart-tip { position: absolute; display: none; pointer-events: none; z-index: 10; white-space: nowrap;
@@ -129,8 +140,26 @@ td.title { white-space: normal; min-width: 220px; }
          color: #ffd0d8; display: none; z-index: 20; }
 #toast.ok { background: #13241b; border-color: #235a3a; color: var(--good); }
 
+/* phones: the pages and pickers fold into a menu under the header row */
 @media (max-width: 700px) {
   main { padding: 12px; }
-  header { padding: 8px 12px; }
-  .player-pick { margin-left: 0; }
+  header { padding: 8px 12px; gap: 8px; }
+  .menu-btn { display: block; }
+  .menu { display: none; width: 100%; flex-direction: column; gap: 10px; padding: 4px 0 6px; }
+  header.open .menu { display: flex; }
+  nav { flex-direction: column; }
+  nav a { padding: 10px 12px; }
+  .picks { margin-left: 0; flex-direction: column; align-items: stretch; gap: 8px; }
+  .player-pick { justify-content: space-between; }
+  .player-pick select, #lang { width: 65%; }
+  #lang { align-self: flex-end; }
+  h1 { font-size: 19px; }
+  .panel { padding: 12px; }
+  /* inputs sized for a desktop row take the whole width */
+  .row > input:not([type=checkbox]):not([type=radio]), .row > select { min-width: 0 !important; flex: 1 1 100%; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .panel > table td { white-space: normal; } /* tables outside a scrolling box wrap instead */
+  .panel > table input:not([type=checkbox]):not([type=radio]) { min-width: 0 !important; width: 100%; }
+  .panel > table .mono { word-break: break-all; }
+  #songs td.title { min-width: 0; max-width: 38vw; } /* leave room for the lamp and the score */
 }

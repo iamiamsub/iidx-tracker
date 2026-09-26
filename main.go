@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -198,7 +199,7 @@ var apiRoutes = map[string]apiFunc{
 	"GET /api/categories": func(a *App, q url.Values, _ []byte) (any, error) { return a.store.Categories(dbParam(a, q)) },
 	"GET /api/context":    apiContext,
 	"GET /api/machines": func(a *App, _ url.Values, _ []byte) (any, error) {
-		return a.store.Rows("SELECT m.pcbid, m.musicdb_id, d.name AS musicdb, m.filename, m.altfix, m.game, m.remote, m.booted_at" +
+		return a.store.Rows("SELECT m.pcbid, m.musicdb_id, d.name AS musicdb, m.filename, m.altfix, m.game, m.remote, m.booted_at, m.dxtra" +
 			" FROM machines m LEFT JOIN musicdbs d ON d.id = m.musicdb_id ORDER BY m.booted_at DESC")
 	},
 	"POST /api/categories/create": apiCategoryCreate,
@@ -209,6 +210,94 @@ var apiRoutes = map[string]apiFunc{
 	"POST /api/notes/upload":      apiNotesUpload,
 	"GET /api/sound/inspect":      apiSoundInspect,
 	"POST /api/sound/scan":        apiSoundScan,
+	"POST /api/sound/locate":      apiSoundLocate,
+	"POST /api/sound/import":      apiSoundImport,
+	"GET /api/chartsets":          func(a *App, _ url.Values, _ []byte) (any, error) { return a.store.ChartSets() },
+	"POST /api/chartsets/import":  apiChartSetsImport,
+	"POST /api/chartsets/upload":  apiChartSetsUpload,
+	"POST /api/pick": func(a *App, _ url.Values, raw []byte) (any, error) {
+		// the song page's "pick in the game": the game on the music select jumps to the chart
+		b, err := jsonBody(raw)
+		if err != nil {
+			return nil, err
+		}
+		music, err := needInt(b["music_id"], "music_id")
+		if err != nil {
+			return nil, err
+		}
+		chart, err := needInt(b["chart"], "chart")
+		if err != nil || chart < 0 || chart > 9 {
+			return nil, i18n.New("譜面の指定が不正です", "Invalid chart")
+		}
+		pcbid, err := a.Pick(music, chart)
+		return map[string]any{"pcbid": pcbid}, err
+	},
+	"POST /api/chartsets/delete": func(a *App, _ url.Values, raw []byte) (any, error) {
+		// the set's chart list; plays on it keep their set
+		b, err := jsonBody(raw)
+		if err != nil {
+			return nil, err
+		}
+		_, err = a.store.Exec("DELETE FROM custom_charts WHERE chart_set = ?", str(b["name"]))
+		return map[string]any{"ok": true}, err
+	},
+	"GET /api/musicdata/unassigned": func(a *App, _ url.Values, _ []byte) (any, error) { return a.store.Unassigned() },
+	"POST /api/musicdata/assign":    apiMusicDataAssign,
+}
+
+// apiMusicDataAssign puts a music data file tracker_link.dll reported in the music database the
+// player picked (after looking at the plays recorded on it).
+func apiMusicDataAssign(a *App, _ url.Values, raw []byte) (any, error) {
+	b, err := jsonBody(raw)
+	if err != nil {
+		return nil, err
+	}
+	db, err := needInt(b["musicdb_id"], "musicdb_id")
+	if err != nil {
+		return nil, err
+	}
+	sha := strings.ToLower(str(b["sha256"]))
+	if len(sha) != 64 {
+		return nil, i18n.New("sha256 が必要です", "sha256 is required")
+	}
+	return map[string]any{"ok": true}, a.store.AssignMusicFile(sha, db)
+}
+
+// apiChartSetsUpload takes the chart list a browser read out of 2dxtra.sqlite on its own PC (the
+// tracker may be on another): the sets by 2dxtra's id, and per chart [set id, music ID, chart, id,
+// notes, radar x 6].
+func apiChartSetsUpload(a *App, _ url.Values, raw []byte) (any, error) {
+	var req struct {
+		Sets   map[string]string `json:"sets"`
+		Charts [][]any           `json:"charts"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, i18n.New("譜面の一覧を読めません", "Cannot read the chart list")
+	}
+	charts := make([]store.SetChart, 0, len(req.Charts))
+	for _, c := range req.Charts {
+		if len(c) != 11 {
+			return nil, i18n.New("譜面の一覧を読めません", "Cannot read the chart list")
+		}
+		n := func(i int) int64 { f, _ := c[i].(float64); return int64(f) }
+		set := req.Sets[fmt.Sprint(n(0))]
+		hash, _ := c[3].(string) // 2dxtra leaves a few empty; kept as they are, like the import from a path
+		if set == "" {
+			return nil, i18n.New("譜面の一覧を読めません", "Cannot read the chart list")
+		}
+		charts = append(charts, store.SetChart{Set: set, Order: n(0), Music: n(1), Diff: n(2), Hash: hash, Notes: n(4),
+			Radar: [6]int64{n(5), n(6), n(7), n(8), n(9), n(10)}})
+	}
+	return a.store.ImportSetCharts(charts)
+}
+
+// apiChartSetsImport reads the chart list of 2dxtra's 2dxtra.sqlite (a path on this PC).
+func apiChartSetsImport(a *App, _ url.Values, raw []byte) (any, error) {
+	b, err := jsonBody(raw)
+	if err != nil {
+		return nil, err
+	}
+	return a.store.ImportChartSets(str(b["path"]))
 }
 
 // apiSoundInspect checks a game folder and lists its mods (data_mods, LayeredFS order).
@@ -255,12 +344,7 @@ func apiSoundScan(a *App, _ url.Values, raw []byte) (any, error) {
 	}
 	start := time.Now()
 	songs := sound.Scan(layers)
-	used := []string{}
-	for _, l := range layers {
-		if l.Mod != "" {
-			used = append(used, l.Mod)
-		}
-	}
+	used := usedMods(layers)
 	out, err := a.store.ImportScan(dbID, root, used, songs)
 	if err != nil {
 		return nil, err
@@ -270,10 +354,57 @@ func apiSoundScan(a *App, _ url.Values, raw []byte) (any, error) {
 	return out, nil
 }
 
+func usedMods(layers []sound.Layer) []string {
+	used := []string{}
+	for _, l := range layers {
+		if l.Mod != "" {
+			used = append(used, l.Mod)
+		}
+	}
+	return used
+}
+
+// apiSoundLocate finds the chart of every song of a game folder on the browser's PC (which may not
+// be this one), from its file list and IFS manifests (see sound.Listing): the browser then reads
+// and counts the charts and sends the counts to apiSoundImport.
+func apiSoundLocate(_ *App, _ url.Values, raw []byte) (any, error) {
+	var req struct {
+		Files map[string][]byte `json:"files"` // base64 in JSON
+		Mods  []string          `json:"mods"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, i18n.New("フォルダの一覧を読めません", "Cannot read the folder listing")
+	}
+	layers := sound.Listing(req.Files, req.Mods)
+	return map[string]any{"songs": sound.Scan(layers), "mods": usedMods(layers)}, nil
+}
+
+// apiSoundImport stores the note counts a browser counted from the charts apiSoundLocate found.
+func apiSoundImport(a *App, _ url.Values, raw []byte) (any, error) {
+	var req struct {
+		DB    int64        `json:"musicdb_id"`
+		Root  string       `json:"root"`
+		Mods  []string     `json:"mods"`
+		Songs []sound.Song `json:"songs"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, i18n.New("解析結果を読めません", "Cannot read the counts")
+	}
+	if req.DB == 0 {
+		return nil, i18n.New("紐付ける曲DBを選んでください", "Choose the music database to link")
+	}
+	out, err := a.store.ImportScan(req.DB, req.Root, req.Mods, req.Songs)
+	if err != nil {
+		return nil, err
+	}
+	out["mods"] = req.Mods
+	return out, nil
+}
+
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	route, ok := apiRoutes[r.Method+" "+r.URL.Path]
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		writeJSON(w, r, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
 	var body []byte
@@ -288,12 +419,12 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case errors.As(err, &userErr):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": i18n.Text(err, lang)})
+		writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": i18n.Text(err, lang)})
 	case err != nil:
 		log.Printf(i18n.L("API エラー: %s: %v", "API error: %s: %v"), r.URL.Path, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeJSON(w, r, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	default:
-		writeJSON(w, http.StatusOK, out)
+		writeJSON(w, r, http.StatusOK, out)
 	}
 }
 
@@ -411,17 +542,24 @@ func apiContext(a *App, q url.Values, _ []byte) (any, error) {
 }
 
 func apiPlayer(a *App, q url.Values, _ []byte) (any, error) {
-	key := qget(q, "key")
+	key, set := qget(q, "key"), qget(q, "set")
 	db := dbParam(a, q)
-	data, err := a.store.Player(key)
+	data, err := a.store.Player(key, set)
 	if err != nil {
 		return nil, err
 	}
-	data["db"] = db
+	data["db"], data["set"] = db, set
+	if set != "" {
+		if data["set_radar"], err = a.store.SetRadar(key, db, set); err != nil {
+			return nil, err
+		}
+		n, _ := a.store.Row("SELECT COUNT(*) AS n FROM custom_charts WHERE chart_set = ?", set)
+		data["set_charts"] = n["n"] // 0: 2dxtra.sqlite not imported, the radar cannot be computed
+	}
 	// level -> count per clear lamp (index = cflg, 0 = not played yet)
 	lamps, djpoint := map[string]any{}, map[string]any{}
 	for _, style := range []string{"SP", "DP"} {
-		rows, err := a.store.ChartRows(key, style, 0, "", "", db)
+		rows, err := a.store.ChartRows(key, style, 0, "", "", db, set)
 		if err != nil {
 			return nil, err
 		}
@@ -454,7 +592,7 @@ func apiSongs(a *App, q url.Values, _ []byte) (any, error) {
 			return nil, err
 		}
 	}
-	return a.store.ChartRows(qget(q, "key"), qget(q, "style"), level, qget(q, "category"), qget(q, "q"), dbParam(a, q))
+	return a.store.ChartRows(qget(q, "key"), qget(q, "style"), level, qget(q, "category"), qget(q, "q"), dbParam(a, q), qget(q, "set"))
 }
 
 func apiChart(a *App, q url.Values, _ []byte) (any, error) {
@@ -466,7 +604,7 @@ func apiChart(a *App, q url.Values, _ []byte) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.store.Chart(qget(q, "key"), dbParam(a, q), music, chart)
+	return a.store.Chart(qget(q, "key"), dbParam(a, q), music, chart, qget(q, "set"))
 }
 
 func apiPlay(a *App, q url.Values, _ []byte) (any, error) {
@@ -583,6 +721,15 @@ func apiMusicDBs(a *App, _ url.Values, _ []byte) (any, error) {
 			"FROM sound_scans WHERE musicdb_id = ? ORDER BY id DESC LIMIT 5", d["id"]); err != nil {
 			return nil, err
 		}
+		counts, err := a.store.Rows("SELECT source, COUNT(*) AS n FROM chart_notes_db WHERE musicdb_id = ? GROUP BY source", d["id"])
+		if err != nil {
+			return nil, err
+		}
+		notes := map[string]any{}
+		for _, c := range counts {
+			notes[str(c["source"])] = c["n"]
+		}
+		d["notes"] = notes
 	}
 	return dbs, nil
 }
@@ -595,11 +742,12 @@ func apiMusicDBUpload(a *App, q url.Values, raw []byte) (any, error) {
 	if name == "" {
 		name = "music_data.bin"
 	}
-	target := qget(q, "target")
-	if target == "" {
-		target = "auto"
+	// importing the file a game reported: another version of it (same name) must not slip in
+	if expect := qget(q, "expect"); expect != "" && !strings.EqualFold(expect, fmt.Sprintf("%x", sha256.Sum256(raw))) {
+		return nil, i18n.New("選んだファイルは、ゲームが読み込んでいる曲データと中身が違います (ファイル名が同じでも版が違うと合いません)",
+			"This file is not the music data the game loads (the same name can be another version)")
 	}
-	return a.store.ImportMusicDB(name, raw, target, qget(q, "name"))
+	return a.store.ImportMusicDB(name, raw, qget(q, "target"), qget(q, "name"))
 }
 
 func apiMusicDBUpdate(a *App, _ url.Values, raw []byte) (any, error) {
@@ -612,10 +760,32 @@ func apiMusicDBUpdate(a *App, _ url.Values, raw []byte) (any, error) {
 		return nil, err
 	}
 	defer a.store.ForgetSongs()
+	if imp := b["delete_import"]; imp != nil {
+		return map[string]any{"ok": true}, a.store.DeleteImport(imp)
+	}
 	if truthy(b["delete"]) {
-		for _, q := range []string{"DELETE FROM songs WHERE musicdb_id = ?", "DELETE FROM musicdb_imports WHERE musicdb_id = ?",
+		for _, q := range []string{"DELETE FROM songs WHERE musicdb_id = ?",
+			"DELETE FROM import_songs WHERE import_id IN (SELECT id FROM musicdb_imports WHERE musicdb_id = ?)",
+			"DELETE FROM musicdb_imports WHERE musicdb_id = ?",
 			"DELETE FROM chart_notes_db WHERE musicdb_id = ?", "DELETE FROM sound_scans WHERE musicdb_id = ?",
-			"DELETE FROM musicdbs WHERE id = ?"} {
+			"UPDATE music_files SET musicdb_id = NULL WHERE musicdb_id = ?", "DELETE FROM musicdbs WHERE id = ?"} {
+			if _, err := a.store.Exec(q, id); err != nil {
+				return nil, err
+			}
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	// one kind of what was imported into the database; the database and the plays stay
+	if what := str(b["clear"]); what != "" {
+		qs, ok := map[string][]string{
+			"analysis": {"DELETE FROM chart_notes_db WHERE musicdb_id = ? AND source = 'analysis'", "DELETE FROM sound_scans WHERE musicdb_id = ?"},
+			"import":   {"DELETE FROM chart_notes_db WHERE musicdb_id = ? AND source = 'import'"},
+			"observed": {"DELETE FROM chart_notes_db WHERE musicdb_id = ? AND source = 'observed'"},
+		}[what]
+		if !ok {
+			return nil, i18n.New("削除する情報の種類が不明です", "Unknown kind of data to delete")
+		}
+		for _, q := range qs {
 			if _, err := a.store.Exec(q, id); err != nil {
 				return nil, err
 			}

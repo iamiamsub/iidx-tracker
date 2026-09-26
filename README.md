@@ -32,6 +32,15 @@ The web UI is in English and Japanese (switch at the top right). The log follows
 
 A DLL for the game, included in the zip. With it, the tracker also records which music data the game loaded, judgments per key,
 FAST/SLOW per judgment and the score rate of each measure. Put it in the game's modules folder and load it with `-k tracker_link.dll` (spice2x).
+It only does anything when the game connects through the tracker (the tracker tells it so in its answer to `services.get`); otherwise it
+stays idle until the game exits.
+
+Plays are filed under the music DB that holds the music data the game reported, which also tells omnimix from the regular game.
+Music data the tracker has not seen imported waits on the **Music DB** page, with the plays recorded on it, for you to pick its music DB.
+
+With [2dxtra](https://github.com/aixxe/2dxtra) loaded as well, plays on the charts 2dxtra generates (Kiraku, Kichiku, All-Scratch) are
+recorded too: 2dxtra keeps them from the server, so tracker_link.dll sends them when the card goes out, and the tracker counts them apart
+from the game's charts. Import `2dxtra.sqlite` on the **Music DB** page to list each set's charts, then pick the set in the song list.
 
 ## Building
 

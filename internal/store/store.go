@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     profile_id INTEGER, model TEXT, game_version INTEGER, omni INTEGER, cabinet TEXT,
     sp_plays INTEGER, dp_plays INTEGER, arena_sp INTEGER, arena_dp INTEGER,
     radar_sp TEXT, radar_dp TEXT, started_at INTEGER, saved_at INTEGER,
-    djpoint_sp INTEGER, djpoint_dp INTEGER, pcbid TEXT, musicdb_id INTEGER);
+    djpoint_sp INTEGER, djpoint_dp INTEGER, pcbid TEXT, musicdb_id INTEGER,
+    music_hash TEXT, dxtra INTEGER, radar_sp_play INTEGER, radar_dp_play INTEGER);
 
 CREATE TABLE IF NOT EXISTS plays (
     id INTEGER PRIMARY KEY, session_id INTEGER, card_id TEXT, upstream TEXT, iidx_id INTEGER,
@@ -60,7 +61,8 @@ CREATE TABLE IF NOT EXISTS plays (
     play_style INTEGER, play_side INTEGER, progress INTEGER, is_death INTEGER,
     prev_best_score INTEGER, prev_best_clear INTEGER, prev_best_miss INTEGER,
     ghost BLOB, ghost_gauge BLOB, raw BLOB, chatter TEXT, pcbid TEXT, musicdb_id INTEGER,
-    judge_timing TEXT, judge_lanes TEXT, judge_measures TEXT);
+    judge_timing TEXT, judge_lanes TEXT, judge_measures TEXT,
+    chart_set TEXT, chart_hash TEXT, chart_notes INTEGER, music_hash TEXT, dxtra INTEGER);
 CREATE INDEX IF NOT EXISTS plays_chart ON plays (card_id, music_id, chart);
 CREATE INDEX IF NOT EXISTS plays_time ON plays (played_at);
 
@@ -99,16 +101,45 @@ CREATE TABLE IF NOT EXISTS server_bests (
     PRIMARY KEY (upstream, iidx_id, music_id, chart));
 
 -- Cabinets (by PCBID, the srcid of every call) and the music data file tracker_link.dll reported
--- in their last services.get, which decides the music database of their plays. "altfix" holds the
--- reporting DLL's version (the name is older than tracker_link).
+-- at their last login, which decides the music database of their plays until a login comes without
+-- one (unreported_at). "altfix" holds the reporting DLL's version (the name is
+-- older than tracker_link), dxtra whether 2dxtra was loaded.
 CREATE TABLE IF NOT EXISTS machines (
     pcbid TEXT PRIMARY KEY, musicdb_id INTEGER, sha256 TEXT, filename TEXT, size INTEGER,
-    altfix TEXT, game TEXT, remote TEXT, booted_at INTEGER);
+    altfix TEXT, game TEXT, remote TEXT, booted_at INTEGER, dxtra INTEGER, unreported_at INTEGER);
 
 CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT, created_at INTEGER);
 CREATE TABLE IF NOT EXISTS category_songs (
     category_id INTEGER, music_id INTEGER, PRIMARY KEY (category_id, music_id));
+` + customChartsSchema + musicFilesSchema + importSongsSchema
+
+// importSongsSchema: the song list of every imported music data file, so that one import can be
+// taken back (songs is rebuilt from the imports that remain, see DeleteImport).
+const importSongsSchema = `
+CREATE TABLE IF NOT EXISTS import_songs (
+    import_id INTEGER NOT NULL, music_id INTEGER NOT NULL,
+    title TEXT, title_ascii TEXT, genre TEXT, artist TEXT, subtitle TEXT, version INTEGER, levels TEXT,
+    PRIMARY KEY (import_id, music_id));
+`
+
+// musicFilesSchema: every music data file tracker_link.dll reported, and the music database the
+// player put it in when it was not one they had imported. Plays keep the file in music_hash; until
+// the file has a database their musicdb_id stays empty and the UI asks which one it is.
+const musicFilesSchema = `
+CREATE TABLE IF NOT EXISTS music_files (
+    sha256 TEXT PRIMARY KEY, filename TEXT, size INTEGER, musicdb_id INTEGER);
+`
+
+// customChartsSchema: the charts of an imported 2dxtra.sqlite (2dxtra generates them from the
+// game's charts: Kiraku, Kichiku, All-Scratch). Plays on them carry chart_set, chart_hash (2dxtra's
+// chart id, the SHA-256 of the chart) and chart_notes in plays.
+const customChartsSchema = `
+CREATE TABLE IF NOT EXISTS custom_charts (
+    chart_set TEXT NOT NULL, set_order INTEGER, music_id INTEGER NOT NULL, chart INTEGER NOT NULL,
+    hash TEXT NOT NULL, notes INTEGER, radar TEXT, imported_at INTEGER,
+    PRIMARY KEY (chart_set, music_id, chart));
+CREATE INDEX IF NOT EXISTS custom_charts_hash ON custom_charts (hash);
 `
 
 // A play that arrives this long after the login is not tied to it.
@@ -165,8 +196,8 @@ func Open(path string) (*Store, error) {
 
 // The database's version is kept in SQLite's user_version:
 //
-//	0  from before versions: the Python tracker, or this one before 2026-09-27
-//	1  2026-09-27: the tables in schema
+//	0  from before versions: the Python tracker, or this one before 2026-09-26
+//	1  2026-09-26: the tables in schema
 //	2… one per step in migrations
 //
 // To change the tables later, append a step to migrations (never change one that has been
@@ -180,7 +211,86 @@ func Open(path string) (*Store, error) {
 //
 // Opening an older database first copies it next to itself (<file>.v<version>-<time>.bak), then
 // runs the missing steps in order, each in one transaction that also records its version.
-var migrations = []func(tx *sql.Tx) error{}
+var migrations = []func(tx *sql.Tx) error{
+	// 1 -> 2 (2026-09-26): plays on 2dxtra's charts (tracker_link.dll reports them in pc.save) and
+	// the charts of an imported 2dxtra.sqlite
+	func(tx *sql.Tx) error {
+		if err := addColumns(tx, "plays", "chart_set TEXT", "chart_hash TEXT", "chart_notes INTEGER"); err != nil {
+			return err
+		}
+		_, err := tx.Exec(customChartsSchema)
+		return err
+	},
+	// 2 -> 3 (2026-09-26): the music data file (and 2dxtra) tracker_link.dll reports at login, kept
+	// per play, per login and per file
+	func(tx *sql.Tx) error {
+		for table, cols := range map[string][]string{
+			"plays":    {"music_hash TEXT", "dxtra INTEGER"},
+			"sessions": {"music_hash TEXT", "dxtra INTEGER"},
+			"machines": {"dxtra INTEGER", "unreported_at INTEGER"},
+		} {
+			if err := addColumns(tx, table, cols...); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(musicFilesSchema)
+		return err
+	},
+	// 3 -> 4 (2026-09-26): the song list of every import, so that one import can be taken back
+	func(tx *sql.Tx) error {
+		if _, err := tx.Exec(importSongsSchema); err != nil {
+			return err
+		}
+		// ponytail: an earlier import keeps only the songs it was the last to carry (the latest import
+		// of a database keeps all of its songs), so taking back a later one leaves it incomplete - import
+		// that file again then
+		_, err := tx.Exec("INSERT OR IGNORE INTO import_songs SELECT last_import, music_id, title, title_ascii, genre, " +
+			"artist, subtitle, version, levels FROM songs WHERE last_import IS NOT NULL")
+		return err
+	},
+	// 4 -> 5 (2026-09-27): which play's chart set a recorded notes radar belongs to (see radarSource)
+	func(tx *sql.Tx) error {
+		if err := addColumns(tx, "sessions", "radar_sp_play INTEGER", "radar_dp_play INTEGER"); err != nil {
+			return err
+		}
+		// earlier logins: a credit saved the radar of its last play's set; a login shows what the
+		// credit before saved (ponytail: both styles alike, the save only carries those that changed)
+		rows, err := rowsOf(tx, `SELECT s.id, s.upstream, s.iidx_id, s.saved_at,
+			(SELECT p.id FROM plays p WHERE p.session_id = s.id ORDER BY p.played_at DESC, p.id DESC LIMIT 1) AS last
+			FROM sessions s ORDER BY s.upstream, s.iidx_id, s.started_at, s.id`)
+		if err != nil {
+			return err
+		}
+		carry := map[string]any{}
+		for _, r := range rows {
+			k := fmt.Sprint(r["upstream"], "|", r["iidx_id"])
+			if r["saved_at"] != nil {
+				carry[k] = r["last"]
+			}
+			if _, err := tx.Exec("UPDATE sessions SET radar_sp_play = ?, radar_dp_play = ? WHERE id = ?", carry[k], carry[k], r["id"]); err != nil {
+				return err
+			}
+		}
+		return nil
+	},
+}
+
+// addColumns adds the columns a table does not have yet (a database made from the latest schema
+// already has them: tests make "old" databases that way).
+func addColumns(tx *sql.Tx, table string, cols ...string) error {
+	have, err := columns(tx, table)
+	if err != nil {
+		return err
+	}
+	for _, c := range cols {
+		if name, _, _ := strings.Cut(c, " "); !have[name] {
+			if _, err := tx.Exec("ALTER TABLE " + table + " ADD COLUMN " + c); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // LatestVersion is the database version this build writes.
 func LatestVersion() int { return 1 + len(migrations) }
@@ -319,8 +429,8 @@ func assignUnknownDBs(db interface {
 	fit := `(SELECT id FROM musicdbs m WHERE m.kind = CASE %[1]s.omni WHEN 1 THEN 'omni' ELSE 'vanilla' END
 		AND m.game_version = %[1]s.game_version ORDER BY id DESC LIMIT 1)`
 	for _, q := range []string{
-		fmt.Sprintf("UPDATE plays SET musicdb_id = "+fit+" WHERE musicdb_id IS NULL", "plays"),
-		fmt.Sprintf("UPDATE sessions SET musicdb_id = "+fit+" WHERE musicdb_id IS NULL", "sessions"),
+		fmt.Sprintf("UPDATE plays SET musicdb_id = "+fit+" WHERE musicdb_id IS NULL AND music_hash IS NULL", "plays"),
+		fmt.Sprintf("UPDATE sessions SET musicdb_id = "+fit+" WHERE musicdb_id IS NULL AND music_hash IS NULL", "sessions"),
 		`UPDATE server_bests SET musicdb_id = (SELECT musicdb_id FROM sessions s WHERE s.upstream = server_bests.upstream
 			AND s.iidx_id = server_bests.iidx_id AND s.musicdb_id IS NOT NULL ORDER BY started_at DESC LIMIT 1)
 			WHERE musicdb_id IS NULL`,
@@ -332,7 +442,7 @@ func assignUnknownDBs(db interface {
 	return nil
 }
 
-func columns(db *sql.DB, table string) (map[string]bool, error) {
+func columns(db queryer, table string) (map[string]bool, error) {
 	rows, err := db.Query("PRAGMA table_info(" + table + ")")
 	if err != nil {
 		return nil, err
@@ -563,37 +673,24 @@ func (s *Store) Ingest(c *Call) error {
 		return nil
 	}
 	version := num(c.Module[4:6], true)
-	omni := int64(0)
-	if len(model) > 3 && model[3] == "S" {
-		omni = 1
-	}
-	db := s.dbForCall(c.PCBID, omni, version)
+	cab := s.CabinetFor(c.PCBID, c.Model, version)
 	switch c.Module[6:] + "." + c.Method {
 	case "pc.get":
-		return s.pcGet(c, version, omni, db)
+		return s.pcGet(c, version, cab)
 	case "music.reg":
-		return s.musicReg(c, version, omni, db)
+		return s.musicReg(c, version, cab, nil)
 	case "pc.save":
-		return s.pcSave(c)
+		if err := s.pcSave(c); err != nil {
+			return err
+		}
+		if err := s.customPlays(c, version, cab); err != nil {
+			return err
+		}
+		return s.radarSource(c)
 	case "music.getrank":
-		return s.musicGetrank(c, db)
+		return s.musicGetrank(c, cab.DB)
 	}
 	return nil
-}
-
-// dbForCall decides the music database of a cabinet's traffic: the one altfix reported the game
-// loaded, as long as it fits the call (same kind - omnimix or not - and game version; after a
-// restart without altfix the report no longer applies), else the newest lineage that fits.
-func (s *Store) dbForCall(pcbid string, omni int64, version any) any {
-	if pcbid != "" {
-		r, err := s.Row("SELECT d.id, d.kind, d.game_version FROM machines m JOIN musicdbs d ON d.id = m.musicdb_id "+
-			"WHERE m.pcbid = ?", pcbid)
-		kind := map[int64]string{0: "vanilla", 1: "omni"}[omni]
-		if err == nil && r != nil && r["kind"] == kind && fmt.Sprint(r["game_version"]) == fmt.Sprint(version) {
-			return r["id"]
-		}
-	}
-	return s.DBFor(omni, version)
 }
 
 func (s *Store) sessionFor(q queryer, upstream string, iidx any) (Row, error) {
@@ -637,7 +734,7 @@ func insertRow(tx *sql.Tx, table string, cols []string, vals []any) (int64, erro
 	return res.LastInsertId()
 }
 
-func (s *Store) pcGet(c *Call, version any, omni int64, db any) error {
+func (s *Store) pcGet(c *Call, version any, cab Cabinet) error {
 	pc := c.Resp.Find("pcdata")
 	if pc == nil {
 		return nil // unregistered card or an error response
@@ -695,13 +792,24 @@ func (s *Store) pcGet(c *Call, version any, omni int64, db any) error {
 			append(ident, c.TS, c.TS)); err != nil {
 			return err
 		}
+		// the radar the server returns is the one the credit before saved (the server does not compute it)
+		before, err := rowsOf(tx, "SELECT radar_sp_play, radar_dp_play FROM sessions WHERE upstream = ? AND iidx_id = ? "+
+			"ORDER BY started_at DESC, id DESC LIMIT 1", c.Upstream, iidx)
+		if err != nil {
+			return err
+		}
+		radarPlay := Row{}
+		if len(before) > 0 {
+			radarPlay = before[0]
+		}
 		sid, err = insertRow(tx, "sessions",
 			[]string{"card_id", "upstream", "refid", "iidx_id", "profile_id", "model", "game_version", "omni",
 				"sp_plays", "dp_plays", "arena_sp", "arena_dp", "radar_sp", "radar_dp", "started_at",
-				"djpoint_sp", "djpoint_dp", "pcbid", "musicdb_id"},
-			[]any{card, c.Upstream, refid, iidx, profileID, c.Model, version, omni,
+				"djpoint_sp", "djpoint_dp", "pcbid", "musicdb_id", "music_hash", "dxtra", "radar_sp_play", "radar_dp_play"},
+			[]any{card, c.Upstream, refid, iidx, profileID, c.Model, version, cab.Omni,
 				attr(pc, "spnum"), attr(pc, "dpnum"), arena["0"], arena["1"], radar["0"], radar["1"], c.TS,
-				attr(pc, "sach"), attr(pc, "dach"), nullStr(c.PCBID), db})
+				attr(pc, "sach"), attr(pc, "dach"), nullStr(c.PCBID), cab.DB, cab.Hash, cab.Dxtra,
+				radarPlay["radar_sp_play"], radarPlay["radar_dp_play"]})
 		if err != nil {
 			return err
 		}
@@ -720,7 +828,9 @@ func (s *Store) pcGet(c *Call, version any, omni int64, db any) error {
 	return err
 }
 
-func (s *Store) musicReg(c *Call, version any, omni int64, db any) error {
+// musicReg records a play from its music.reg request; custom names the 2dxtra chart it was on
+// (the request is then one customMusicReg made).
+func (s *Store) musicReg(c *Call, version any, cab Cabinet, custom *CustomChart) error {
 	m := c.Req
 	musicID, chart := attr(m, "mid"), attr(m, "clid")
 	if musicID == nil || chart == nil {
@@ -766,8 +876,8 @@ func (s *Store) musicReg(c *Call, version any, omni int64, db any) error {
 		"combo_break", "fast", "slow", "miss_count", "dj_level", "gauge_type", "mode_type", "option1", "option2",
 		"ran_arrange", "play_style", "play_side", "progress", "is_death", "prev_best_score", "prev_best_clear",
 		"prev_best_miss", "ghost", "ghost_gauge", "raw", "chatter", "pcbid", "musicdb_id",
-		"judge_timing", "judge_lanes", "judge_measures"}
-	vals := []any{get("id"), get("card_id"), c.Upstream, iidx, c.TS, c.Model, version, omni,
+		"music_hash", "dxtra", "judge_timing", "judge_lanes", "judge_measures", "chart_set", "chart_hash", "chart_notes"}
+	vals := []any{get("id"), get("card_id"), c.Upstream, iidx, c.TS, c.Model, version, cab.Omni,
 		get("cabinet"), musicID, chart, attr(m, "mlevel"), attr(m, "cflg"),
 		pick("ex_score", pgreat*2+great), pgreat, great,
 		attr(best, "now_good"), attr(best, "now_bad"), attr(best, "now_poor"), attr(best, "now_combo"),
@@ -777,8 +887,12 @@ func (s *Store) musicReg(c *Call, version any, omni int64, db any) error {
 		attr(log, "ran_arrange"), pick("play_style", styleDefault), attr(m, "pside"),
 		attr(chatterLog, "progress"), attr(m, "is_death"),
 		attr(best, "best_score"), attr(best, "best_clear"), attr(best, "best_misscount"),
-		binText(m.Find("ghost")), binText(m.Find("ghost_gauge")), raw.Bytes(), chatterText, nullStr(c.PCBID), db,
-		linkInts(c.Link, "judge", 22), linkInts(c.Link, "lane", 96), linkMeasures(c.Link)}
+		binText(m.Find("ghost")), binText(m.Find("ghost_gauge")), raw.Bytes(), chatterText, nullStr(c.PCBID), cab.DB,
+		cab.Hash, cab.Dxtra, linkInts(c.Link, "judge", 22), linkInts(c.Link, "lane", 96), linkMeasures(c.Link), nil, nil, nil}
+	if custom != nil {
+		n := len(vals)
+		vals[n-3], vals[n-2], vals[n-1] = custom.Set, custom.Hash, custom.Notes
+	}
 	play := map[string]any{}
 	for i, col := range cols {
 		play[col] = vals[i]
@@ -787,7 +901,13 @@ func (s *Store) musicReg(c *Call, version any, omni int64, db any) error {
 		if _, err := insertRow(tx, "plays", cols, vals); err != nil {
 			return err
 		}
-		return observeNotes(tx, db, musicID, chart, play)
+		if custom != nil {
+			return nil // a 2dxtra chart's notes say nothing about the game's chart
+		}
+		if cab.DB == nil && cab.Hash != nil {
+			return nil // ponytail: nothing is learned while the file's database is unknown; relearn on assignment if it matters
+		}
+		return observeNotes(tx, cab.DB, musicID, chart, play)
 	})
 }
 
@@ -853,6 +973,41 @@ func (s *Store) pcSave(c *Call) error {
 		_, err := tx.Exec("UPDATE plays SET cabinet = ? WHERE session_id = ?", cabinet, session["id"])
 		return err
 	})
+}
+
+// radarSource notes which play decided the notes radar a pc.save carries. The game computes the
+// radar again at every result (CPlayerNotesRadarGameData::Recalculate) from the radar values and
+// scores of the charts in use - 2dxtra swaps both for its set's - so what a credit saves belongs to
+// the chart set of its last play; with no play, to the game's charts (computed on leaving the mode
+// select, where no set is active).
+func (s *Store) radarSource(c *Call) error {
+	cols := map[string]bool{} // the styles whose radar the save carries
+	for _, r := range c.Req.FindAll("notes_radar") {
+		if col, ok := map[string]string{"0": "radar_sp_play", "1": "radar_dp_play"}[r.Get("style")]; ok {
+			cols[col] = true
+		}
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	session, err := s.sessionFor(s.db, c.Upstream, attr(c.Req, "iidxid"))
+	if err != nil || session == nil {
+		return err
+	}
+	last, err := rowsOf(s.db, "SELECT id FROM plays WHERE session_id = ? ORDER BY played_at DESC, id DESC LIMIT 1", session["id"])
+	if err != nil {
+		return err
+	}
+	var play any
+	if len(last) > 0 {
+		play = last[0]["id"]
+	}
+	for col := range cols {
+		if _, err := s.Exec("UPDATE sessions SET "+col+" = ? WHERE id = ?", play, session["id"]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // musicGetrank stores the player's own bests. Response: <style type="0|1"/> and one <m> s32[17]
@@ -922,48 +1077,22 @@ func (s *Store) ImportMusicDB(filename string, data []byte, target, name string)
 	}
 	sum := sha256.Sum256(data)
 	digest := hex.EncodeToString(sum[:])
-	ids := map[int64]bool{}
-	for _, sg := range md.Songs {
-		ids[sg.ID] = true
-	}
 	now := Now()
-	detected := target == "auto"
 	var result map[string]any
 	err = s.tx(func(tx *sql.Tx) error {
 		var dbid any
-		if detected {
-			lineages, err := rowsOf(tx, "SELECT id FROM musicdbs WHERE game_version = ? AND kind = ?", md.Version, kind)
+		if target != "new" {
+			if dbid = num(target, true); dbid == nil {
+				return i18n.New("取り込み先の曲DB を選んでください", "Pick the music DB to import into")
+			}
+			found, err := rowsOf(tx, "SELECT 1 FROM musicdbs WHERE id = ?", dbid)
 			if err != nil {
 				return err
 			}
-			bestOverlap := -1
-			for _, l := range lineages {
-				have, err := songSet(tx, l["id"])
-				if err != nil {
-					return err
-				}
-				overlap := 0
-				for id := range have {
-					if ids[id] {
-						overlap++
-					}
-				}
-				if overlap > bestOverlap {
-					dbid, bestOverlap = l["id"], overlap
-				}
+			if len(found) == 0 {
+				return i18n.New("指定された曲DBが存在しません", "No such music database")
 			}
-		} else if target != "new" {
-			if dbid = num(target, true); dbid != nil {
-				found, err := rowsOf(tx, "SELECT 1 FROM musicdbs WHERE id = ?", dbid)
-				if err != nil {
-					return err
-				}
-				if len(found) == 0 {
-					return i18n.New("指定された曲DBが存在しません", "No such music database")
-				}
-			}
-		}
-		if dbid == nil {
+		} else {
 			n := strings.TrimSpace(name)
 			if n == "" { // the same in every language: "IIDX33", "IIDX33 omni"
 				n = fmt.Sprintf("IIDX%d", md.Version)
@@ -983,28 +1112,13 @@ func (s *Store) ImportMusicDB(filename string, data []byte, target, name string)
 			return err
 		}
 		if len(latest) > 0 && latest[0]["sha256"] == digest {
-			result = map[string]any{"musicdb_id": dbid, "detected": detected, "duplicate": true,
+			result = map[string]any{"musicdb_id": dbid, "duplicate": true,
 				"songs": len(md.Songs), "added": 0, "removed": 0}
 			return errDuplicate
 		}
-		before, err := songSet(tx, dbid)
-		if err != nil {
-			return err
-		}
-		added, removed := 0, 0
-		for id := range ids {
-			if !before[id] {
-				added++
-			}
-		}
-		for id := range before {
-			if !ids[id] {
-				removed++
-			}
-		}
 		imp, err := insertRow(tx, "musicdb_imports",
-			[]string{"musicdb_id", "filename", "sha256", "song_count", "added", "removed", "imported_at"},
-			[]any{dbid, filename, digest, len(md.Songs), added, removed, now})
+			[]string{"musicdb_id", "filename", "sha256", "song_count", "imported_at"},
+			[]any{dbid, filename, digest, len(md.Songs), now})
 		if err != nil {
 			return err
 		}
@@ -1013,20 +1127,17 @@ func (s *Store) ImportMusicDB(filename string, data []byte, target, name string)
 			for i, l := range sg.Levels {
 				levels[i] = strconv.FormatInt(l, 10)
 			}
-			if _, err := tx.Exec("INSERT OR REPLACE INTO songs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
-				dbid, sg.ID, sg.Text["title"], sg.Text["title_ascii"], sg.Text["genre"], sg.Text["artist"],
-				sg.Text["subtitle"], sg.Version, "["+strings.Join(levels, ", ")+"]", imp); err != nil {
+			if _, err := tx.Exec("INSERT OR REPLACE INTO import_songs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				imp, sg.ID, sg.Text["title"], sg.Text["title_ascii"], sg.Text["genre"], sg.Text["artist"],
+				sg.Text["subtitle"], sg.Version, "["+strings.Join(levels, ", ")+"]"); err != nil {
 				return err
 			}
 		}
-		for id := range before {
-			if !ids[id] {
-				if _, err := tx.Exec("UPDATE songs SET removed = 1 WHERE musicdb_id = ? AND music_id = ?", dbid, id); err != nil {
-					return err
-				}
-			}
+		added, removed, err := applyImport(tx, dbid, imp)
+		if err != nil {
+			return err
 		}
-		result = map[string]any{"musicdb_id": dbid, "detected": detected, "duplicate": false,
+		result = map[string]any{"musicdb_id": dbid, "duplicate": false,
 			"songs": len(md.Songs), "added": added, "removed": removed}
 		return nil
 	})
@@ -1040,14 +1151,87 @@ func (s *Store) ImportMusicDB(filename string, data []byte, target, name string)
 	if err := assignUnknownDBs(s.db); err != nil {
 		return nil, err
 	}
-	// cabinets that reported this file before it was imported now have their music database
-	if _, err := s.Exec("UPDATE machines SET musicdb_id = ? WHERE sha256 = ?", result["musicdb_id"], digest); err != nil {
+	// cabinets that reported this file before it was imported, and their plays, now have their music database
+	if err := s.AssignMusicFile(digest, result["musicdb_id"]); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
 var errDuplicate = errors.New("duplicate import")
+
+// applyImport lays an import's song list over a music database's songs: its songs take its values,
+// the database's songs it lacks are marked removed. It records and returns how many songs it added
+// and removed.
+func applyImport(tx *sql.Tx, db, imp any) (added, removed int, err error) {
+	if err = tx.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM import_songs i WHERE i.import_id = ?1 AND NOT EXISTS
+			(SELECT 1 FROM songs s WHERE s.musicdb_id = ?2 AND s.music_id = i.music_id AND s.removed = 0)),
+		(SELECT COUNT(*) FROM songs s WHERE s.musicdb_id = ?2 AND s.removed = 0 AND s.music_id NOT IN
+			(SELECT music_id FROM import_songs WHERE import_id = ?1))`, imp, db).Scan(&added, &removed); err != nil {
+		return
+	}
+	for _, q := range []string{
+		"UPDATE songs SET removed = 1 WHERE musicdb_id = ?2 AND music_id NOT IN (SELECT music_id FROM import_songs WHERE import_id = ?1)",
+		"INSERT OR REPLACE INTO songs SELECT ?2, music_id, title, title_ascii, genre, artist, subtitle, version, levels, ?1, 0 " +
+			"FROM import_songs WHERE import_id = ?1",
+	} {
+		if _, err = tx.Exec(q, imp, db); err != nil {
+			return
+		}
+	}
+	_, err = tx.Exec("UPDATE musicdb_imports SET added = ?, removed = ? WHERE id = ?", added, removed, imp)
+	return
+}
+
+// DeleteImport takes back one import of a music database: its songs are rebuilt from the imports
+// that remain. When no import of the database carries the file any more, the file is no longer the
+// database's: cabinets reporting it and the plays recorded on it wait to be assigned again.
+func (s *Store) DeleteImport(id any) error {
+	r, err := s.Row("SELECT musicdb_id, sha256 FROM musicdb_imports WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	if r == nil {
+		return i18n.New("指定された取り込みがありません", "No such import")
+	}
+	db, sha := r["musicdb_id"], r["sha256"]
+	err = s.tx(func(tx *sql.Tx) error {
+		for _, q := range []string{"DELETE FROM import_songs WHERE import_id = ?", "DELETE FROM musicdb_imports WHERE id = ?"} {
+			if _, err := tx.Exec(q, id); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec("DELETE FROM songs WHERE musicdb_id = ?", db); err != nil {
+			return err
+		}
+		imports, err := rowsOf(tx, "SELECT id FROM musicdb_imports WHERE musicdb_id = ? ORDER BY id", db)
+		if err != nil {
+			return err
+		}
+		for _, imp := range imports {
+			if _, _, err := applyImport(tx, db, imp["id"]); err != nil {
+				return err
+			}
+		}
+		if still, err := rowsOf(tx, "SELECT 1 FROM musicdb_imports WHERE musicdb_id = ? AND sha256 = ?", db, sha); err != nil || len(still) > 0 {
+			return err
+		}
+		for _, q := range []string{
+			"UPDATE music_files SET musicdb_id = NULL WHERE sha256 = ? AND musicdb_id = ?",
+			"UPDATE machines SET musicdb_id = NULL WHERE sha256 = ? AND musicdb_id = ?",
+			"UPDATE plays SET musicdb_id = NULL WHERE music_hash = ? AND musicdb_id = ?",
+			"UPDATE sessions SET musicdb_id = NULL WHERE music_hash = ? AND musicdb_id = ?",
+		} {
+			if _, err := tx.Exec(q, sha, db); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	s.ForgetSongs()
+	return err
+}
 
 func songSet(q queryer, dbid any) (map[int64]bool, error) {
 	rows, err := rowsOf(q, "SELECT music_id FROM songs WHERE musicdb_id = ? AND removed = 0", dbid)

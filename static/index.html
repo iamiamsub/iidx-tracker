@@ -7,19 +7,25 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
+<header id="top">
   <div class="logo">IIDX <span>TRACKER</span></div>
-  <nav id="nav">
-    <a href="#/" data-i18n>ホーム</a>
-    <a href="#/songs" data-i18n>曲</a>
-    <a href="#/player" data-i18n>プレイヤー</a>
-    <a href="#/musicdb" data-i18n>曲DB</a>
-    <a href="#/categories" data-i18n>カテゴリ</a>
-    <a href="#/settings" data-i18n>設定</a>
-  </nav>
-  <label class="player-pick" title="曲 ID は曲DB ごとに別の曲を指すことがあるので、曲一覧や成績は曲DB ごとに見る" data-i18n-title><span data-i18n>曲DB</span> <select id="db"></select></label>
-  <label class="player-pick" style="margin-left:12px"><span data-i18n>プレイヤー</span> <select id="player"></select></label>
-  <select id="lang" class="player-pick" style="margin-left:12px" aria-label="Language"><option value="ja">日本語</option><option value="en">English</option></select>
+  <button id="menu-btn" class="menu-btn" aria-label="Menu" aria-expanded="false">&#9776;</button>
+  <div class="menu">
+    <nav id="nav">
+      <a href="#/" data-i18n>ホーム</a>
+      <a href="#/songs" data-i18n>曲</a>
+      <a href="#/player" data-i18n>プレイヤー</a>
+      <a href="#/musicdb" data-i18n>曲DB</a>
+      <a href="#/categories" data-i18n>カテゴリ</a>
+      <a href="#/settings" data-i18n>設定</a>
+    </nav>
+    <div class="picks">
+      <label class="player-pick" title="曲 ID は曲DB ごとに別の曲を指すことがあるので、曲一覧や成績は曲DB ごとに見る" data-i18n-title><span data-i18n>曲DB</span> <select id="db"></select></label>
+      <label class="player-pick" id="set-pick" hidden title="2dxtra の譜面セット (Kiraku・Kichiku・All-Scratch) の成績とノーツレーダーは、通常の譜面とは別に見る" data-i18n-title><span data-i18n>譜面セット</span> <select id="set"></select></label>
+      <label class="player-pick"><span data-i18n>プレイヤー</span> <select id="player"></select></label>
+      <select id="lang" aria-label="Language"><option value="ja">日本語</option><option value="en">English</option></select>
+    </div>
+  </div>
 </header>
 <main id="view"></main>
 <div id="toast"></div>

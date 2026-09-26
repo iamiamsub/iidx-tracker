@@ -237,7 +237,7 @@ const playColumns = "id, session_id, card_id, upstream, iidx_id, played_at, mode
 	"combo_break, fast, slow, miss_count, dj_level, gauge_type, mode_type, option1, option2, " +
 	"ran_arrange, play_style, play_side, progress, is_death, prev_best_score, " +
 	"prev_best_clear, prev_best_miss, musicdb_id, pcbid, " +
-	"judge_timing IS NOT NULL AS analyzed"
+	"judge_timing IS NOT NULL AS analyzed, chart_set, dxtra"
 
 // Players lists the cards seen, then the card-less players (by IIDX ID).
 func (s *Store) Players() ([]Row, error) {
@@ -273,14 +273,32 @@ type best struct {
 	plays                                  int64
 }
 
-// bests: best per chart of music database db from recorded plays, merged with the server's bests (getrank).
-func (s *Store) bests(key string, db any) (map[chartKey]*best, error) {
-	where, args := playerFilter(key)
-	where, args = where+" AND musicdb_id IS ?", append(args, db)
+// inDB selects the rows of table (plays or server_bests) that count for music database db: those
+// recorded under it, and those recorded under another database of the same game version on a chart
+// db has too (same music ID, same title, the chart exists) - a song of the regular game counts the
+// same whether it was played on omnimix or not. Songs and charts only one database has stay with it.
+func inDB(table string, db any) (string, []any) {
+	if db == nil {
+		return table + ".musicdb_id IS NULL", nil
+	}
+	return fmt.Sprintf(`(%[1]s.musicdb_id = ? OR EXISTS (SELECT 1 FROM songs o
+		JOIN songs d ON d.musicdb_id = ? AND d.music_id = o.music_id AND d.title = o.title AND d.removed = 0
+		JOIN musicdbs om ON om.id = o.musicdb_id JOIN musicdbs dm ON dm.id = d.musicdb_id AND dm.game_version = om.game_version
+		WHERE o.musicdb_id = %[1]s.musicdb_id AND o.music_id = %[1]s.music_id
+			AND json_extract(d.levels, '$[' || %[1]s.chart || ']') > 0))`, table), []any{db, db}
+}
+
+// bests: best per chart of music database db from recorded plays, merged with the server's bests
+// (getrank). set: a 2dxtra chart set, whose plays are kept apart ("" = the game's charts).
+func (s *Store) bests(key string, db any, set string) (map[chartKey]*best, error) {
+	who, whoArgs := playerFilter(key)
+	pdb, pdbArgs := inDB("plays", db)
+	sw, sa := setWhere(set)
+	pw, pa := who+" AND "+pdb+" AND "+sw, append(append(append([]any{}, whoArgs...), pdbArgs...), sa...)
 	rows, err := s.Rows("SELECT music_id, chart, MAX(ex_score) AS best_ex, MAX(clear) AS best_clear, "+
 		"MIN(CASE WHEN miss_count >= 0 THEN miss_count END) AS best_miss, "+
 		"COUNT(*) AS plays, MAX(played_at) AS last_played, MAX(level) AS level "+
-		"FROM plays WHERE "+where+" GROUP BY music_id, chart", args...)
+		"FROM plays WHERE "+pw+" GROUP BY music_id, chart", pa...)
 	if err != nil {
 		return nil, err
 	}
@@ -291,10 +309,14 @@ func (s *Store) bests(key string, db any) (map[chartKey]*best, error) {
 			lastPlayed: ptr(r["last_played"]), level: ptr(r["level"])}
 		out[chartKey{b.music, b.chart}] = b
 	}
-	server, err := s.Rows("SELECT music_id, chart, MAX(ex_score) AS ex, MAX(clear) AS clear, "+
-		"MIN(miss_count) AS miss FROM server_bests WHERE "+where+" GROUP BY music_id, chart", args...)
-	if err != nil {
-		return nil, err
+	var server []Row
+	if set == "" {
+		sdb, sdbArgs := inDB("server_bests", db)
+		if server, err = s.Rows("SELECT music_id, chart, MAX(ex_score) AS ex, MAX(clear) AS clear, "+
+			"MIN(miss_count) AS miss FROM server_bests WHERE "+who+" AND "+sdb+" GROUP BY music_id, chart",
+			append(append([]any{}, whoArgs...), sdbArgs...)...); err != nil {
+			return nil, err
+		}
 	}
 	maxOf := func(vals ...*int64) *int64 {
 		m := int64(0) // the Python max() includes 0
@@ -319,7 +341,7 @@ func (s *Store) bests(key string, db any) (map[chartKey]*best, error) {
 		}
 	}
 	// the DJ LEVEL the game reported for the best EX, for charts whose note count is unknown
-	lv, err := s.Rows("SELECT music_id, chart, ex_score, dj_level FROM plays WHERE "+where+" AND dj_level IS NOT NULL", args...)
+	lv, err := s.Rows("SELECT music_id, chart, ex_score, dj_level FROM plays WHERE "+pw+" AND dj_level IS NOT NULL", pa...)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +376,8 @@ func val(p *int64) any {
 }
 
 // ChartRows lists the charts of music database db with the player's bests; every filter is optional.
-func (s *Store) ChartRows(key, style string, level int64, category, query string, db any) ([]map[string]any, error) {
+// With a 2dxtra chart set, the set's charts (those imported or played) and the bests on them.
+func (s *Store) ChartRows(key, style string, level int64, category, query string, db any, set string) ([]map[string]any, error) {
 	meta, err := s.SongMetas(db)
 	if err != nil {
 		return nil, err
@@ -365,7 +388,13 @@ func (s *Store) ChartRows(key, style string, level int64, category, query string
 	}
 	bests := map[chartKey]*best{}
 	if key != "" {
-		if bests, err = s.bests(key, db); err != nil {
+		if bests, err = s.bests(key, db, set); err != nil {
+			return nil, err
+		}
+	}
+	var custom map[chartKey]int64
+	if set != "" {
+		if custom, err = s.customNotes(set); err != nil {
 			return nil, err
 		}
 	}
@@ -384,8 +413,13 @@ func (s *Store) ChartRows(key, style string, level int64, category, query string
 	}
 	query = strings.ToLower(strings.TrimSpace(query))
 	ids := map[int64]bool{}
-	for mid := range meta {
-		ids[mid] = true
+	if custom == nil {
+		for mid := range meta {
+			ids[mid] = true
+		}
+	}
+	for k := range custom {
+		ids[k.music] = true
 	}
 	for k := range bests {
 		ids[k.music] = true
@@ -412,6 +446,10 @@ func (s *Store) ChartRows(key, style string, level int64, category, query string
 		}
 		for chart := lo; chart < hi; chart++ {
 			b := bests[chartKey{mid, chart}]
+			customNotes, inSet := custom[chartKey{mid, chart}]
+			if custom != nil && !inSet && b == nil {
+				continue
+			}
 			lv := int64(0)
 			if hasSong && int(chart) < len(song.Levels) {
 				lv = song.Levels[chart]
@@ -419,7 +457,7 @@ func (s *Store) ChartRows(key, style string, level int64, category, query string
 			if lv == 0 && b != nil && b.level != nil {
 				lv = *b.level
 			}
-			if lv == 0 && b == nil {
+			if lv == 0 && b == nil && !inSet {
 				continue
 			}
 			if level != 0 && lv != level {
@@ -431,9 +469,12 @@ func (s *Store) ChartRows(key, style string, level int64, category, query string
 				row["title"], row["artist"], row["version"] = song.Title, song.Artist, song.Version
 			}
 			var nc *noteCount
-			if n, ok := notes[chartKey{mid, chart}]; ok {
+			if n, ok := notes[chartKey{mid, chart}]; ok && custom == nil {
 				nc = &n
 				row["notes"], row["notes_source"] = n.notes, n.source
+			} else if customNotes > 0 {
+				nc = &noteCount{customNotes, unknownSet}
+				row["notes"], row["notes_source"] = customNotes, unknownSet
 			}
 			row["djpoint"] = val(bestDjPoint(b, nc))
 			if b != nil {
@@ -504,8 +545,10 @@ func (s *Store) PlaysFor(where string, args []any, tail string) ([]Row, error) {
 	return out, nil
 }
 
-// Player gathers a player's page.
-func (s *Store) Player(key string) (map[string]any, error) {
+// Player gathers a player's page; set picks a 2dxtra chart set for the plays ("" = the game's charts).
+// Each login's radar_sp_set / radar_dp_set name the chart set its notes radar belongs to (see
+// radarSource; nil = the game's charts).
+func (s *Store) Player(key, set string) (map[string]any, error) {
 	where, args := playerFilter(key)
 	out := map[string]any{"key": key, "profiles": []Row{}}
 	var err error
@@ -514,10 +557,15 @@ func (s *Store) Player(key string) (map[string]any, error) {
 			return nil, err
 		}
 	}
-	if out["sessions"], err = s.Rows("SELECT id, upstream, iidx_id, model, game_version, omni, cabinet, sp_plays, "+
-		"dp_plays, arena_sp, arena_dp, radar_sp, radar_dp, started_at, saved_at, djpoint_sp, djpoint_dp, pcbid, musicdb_id FROM sessions WHERE "+where+" ORDER BY started_at", args...); err != nil {
+	if out["sessions"], err = s.Rows("SELECT id, upstream, iidx_id, model, game_version, omni, dxtra, cabinet, sp_plays, "+
+		"dp_plays, arena_sp, arena_dp, radar_sp, radar_dp, started_at, saved_at, djpoint_sp, djpoint_dp, pcbid, musicdb_id, "+
+		"(SELECT chart_set FROM plays p WHERE p.id = radar_sp_play) AS radar_sp_set, "+
+		"(SELECT chart_set FROM plays p WHERE p.id = radar_dp_play) AS radar_dp_set "+
+		"FROM sessions WHERE "+where+" ORDER BY started_at", args...); err != nil {
 		return nil, err
 	}
+	sw, sa := setWhere(set)
+	where, args = where+" AND "+sw, append(args, sa...)
 	since := Now() - 180*86400
 	if out["per_day"], err = s.Rows("SELECT date(played_at, 'unixepoch', 'localtime') AS day, COUNT(*) AS plays "+
 		"FROM plays WHERE "+where+" AND played_at > ? GROUP BY day ORDER BY day", append(args, since)...); err != nil {
@@ -529,24 +577,37 @@ func (s *Store) Player(key string) (map[string]any, error) {
 	return out, nil
 }
 
-// Chart gathers one chart's page for a player, within music database db.
-func (s *Store) Chart(key string, db any, music, chart int64) (map[string]any, error) {
+// Chart gathers one chart's page for a player, within music database db; set picks a 2dxtra chart
+// set ("" = the game's chart).
+func (s *Store) Chart(key string, db any, music, chart int64, set string) (map[string]any, error) {
 	where, args := playerFilter(key)
-	where, args = where+" AND musicdb_id IS ?", append(args, db)
+	sw, sa := setWhere(set)
+	dw, da := inDB("plays", db)
+	where, args = where+" AND "+dw+" AND "+sw, append(append(args, da...), sa...)
 	meta, err := s.SongMetas(db)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"music_id": music, "chart": chart, "song": nil, "notes": nil, "notes_source": nil}
+	out := map[string]any{"music_id": music, "chart": chart, "song": nil, "notes": nil, "notes_source": nil, "set": nil}
 	if m, ok := meta[music]; ok {
 		out["song"] = m
 	}
 	var nc *noteCount
-	if n, src, ok := s.Notes(music, chart, db); ok {
+	if set != "" {
+		out["set"] = set
+		custom, err := s.customNotes(set)
+		if err != nil {
+			return nil, err
+		}
+		if n := custom[chartKey{music, chart}]; n > 0 {
+			nc = &noteCount{n, unknownSet}
+			out["notes"], out["notes_source"] = n, unknownSet
+		}
+	} else if n, src, ok := s.Notes(music, chart, db); ok {
 		nc = &noteCount{n, src}
 		out["notes"], out["notes_source"] = n, src
 	}
-	bests, err := s.bests(key, db)
+	bests, err := s.bests(key, db, set)
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +671,7 @@ func (s *Store) sections(where string, args []any, music, chart int64, recent in
 // PlayGraphs returns one play's graphs and the music.reg values the history table does not show.
 func (s *Store) PlayGraphs(id int64) (any, error) {
 	r, err := s.Row("SELECT music_id, chart, ghost, ghost_gauge, is_death, progress, pgreat, great, "+
-		"good, miss_count, chatter, raw, musicdb_id, judge_timing, judge_lanes, judge_measures FROM plays WHERE id = ?", id)
+		"good, miss_count, chatter, raw, musicdb_id, judge_timing, judge_lanes, judge_measures, chart_notes FROM plays WHERE id = ?", id)
 	if err != nil || r == nil {
 		return nil, err
 	}
@@ -647,6 +708,8 @@ func (s *Store) PlayGraphs(id int64) (any, error) {
 	if progress == 10000 && death == 0 && r["good"] != nil && hasMiss && miss >= 0 {
 		n := orZero(r["pgreat"]) + orZero(r["great"]) + orZero(r["good"]) + miss
 		notes, source = &n, "play"
+	} else if n, ok := asInt(r["chart_notes"]); ok && n > 0 {
+		notes, source = &n, unknownSet
 	} else if n, src, ok := s.Notes(orZero(r["music_id"]), orZero(r["chart"]), r["musicdb_id"]); ok {
 		notes, source = &n, src
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -128,6 +129,14 @@ type App struct {
 	mu     sync.Mutex
 	config map[string]any
 	stats  map[string]any
+	picks  map[string]pick      // PCBID -> the song picked on the song page, for its next poll
+	polled map[string]time.Time // PCBID -> its last poll: it is on the music select
+}
+
+// pick is a song picked on the song page for the game to jump to (the game's chart index, 0..9).
+type pick struct {
+	music, chart int64
+	at           time.Time
 }
 
 func newApp(configPath string, config map[string]any, appDir string, static fs.FS) (*App, error) {
@@ -144,7 +153,7 @@ func newApp(configPath string, config map[string]any, appDir string, static fs.F
 	}
 	app := &App{
 		configPath: configPath, dbPath: dbPath, store: st, config: config, static: static,
-		queue: make(chan pending, 1024),
+		queue: make(chan pending, 1024), picks: map[string]pick{}, polled: map[string]time.Time{},
 		client: &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 			Proxy:              nil,  // talk to the server directly, like the game would
 			DisableCompression: true, // no gzip: the body must stay readable for recording
@@ -256,14 +265,26 @@ func reply(w http.ResponseWriter, status int, body []byte, ctype string) {
 	w.Write(body)
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// writeJSON answers v, gzipped when the browser takes it (the song list is over 1 MB: it matters
+// when the tracker is on another PC).
+func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
 		status, b = 500, *bytes.NewBufferString(`{"error": "json"}`)
 	}
-	reply(w, status, bytes.TrimRight(b.Bytes(), "\n"), "application/json; charset=utf-8")
+	body := bytes.TrimRight(b.Bytes(), "\n")
+	if len(body) > 4096 && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		var z bytes.Buffer
+		zw, _ := gzip.NewWriterLevel(&z, gzip.BestSpeed)
+		zw.Write(body)
+		zw.Close()
+		body = z.Bytes()
+		w.Header().Set("Content-Encoding", "gzip")
+	}
+	w.Header().Set("Vary", "Accept-Encoding")
+	reply(w, status, body, "application/json; charset=utf-8")
 }
 
 func (a *App) serveStatic(w http.ResponseWriter, name string) {
@@ -297,8 +318,9 @@ func (a *App) serveStatic(w http.ResponseWriter, name string) {
 // ---- tracker_link.dll ---------------------------------------------------------------
 //
 // tracker_link.dll (a hook DLL built with altfix) adds a <tracker_link> element to two of the
-// game's requests: services.get gets the music data file the game loads, music.reg the play's
-// judgments by timing and by key. The proxy takes the element out, so the server upstream sees
+// game's requests: pc.get gets the music data file the game loaded and whether 2dxtra is loaded,
+// music.reg the play's judgments by timing and by key, pc.save the plays on 2dxtra's charts. The
+// DLL adds nothing unless the tracker's answer to services.get lists the service "iidx_tracker". The proxy takes the element out, so the server upstream sees
 // the request as the game would send it without the DLL.
 
 // takeLink detaches <tracker_link> from the request (it sits under the method element).
@@ -318,13 +340,17 @@ func takeLink(nodes ...*eamuse.Node) *eamuse.Node {
 	return link
 }
 
-// machineReport records the music data file a cabinet's services.get reported; its plays then
-// belong to the music database holding that file.
+// machineReport records the music data file a cabinet reported (at login; tracker_link 1.0 did in
+// services.get); its plays then belong to the music database holding that file.
 func (a *App) machineReport(r *http.Request, c *store.Call) {
 	remote, _, _ := net.SplitHostPort(r.RemoteAddr)
 	size, _ := strconv.ParseInt(c.Link.Get("size"), 10, 64)
 	name := path.Base(c.Link.Get("name"))
-	db, err := a.store.MachineBoot(c.PCBID, strings.ToLower(c.Link.Get("sha256")), name, size,
+	var dxtra any
+	if d, err := strconv.Atoi(c.Link.Get("dxtra")); err == nil {
+		dxtra = d
+	}
+	db, err := a.store.MachineBoot(c.PCBID, strings.ToLower(c.Link.Get("sha256")), name, size, dxtra,
 		"tracker_link "+c.Link.Get("ver"), c.Model, remote)
 	if err != nil {
 		logf(i18n.L("tracker_link: %s の報告を記録できません: %v", "tracker_link: cannot record the report of %s: %v"), c.PCBID, err)
@@ -335,7 +361,7 @@ func (a *App) machineReport(r *http.Request, c *store.Call) {
 
 func orNone(v any) any {
 	if v == nil {
-		return i18n.L("未登録: 曲DB 画面でこのファイルを取り込むと紐付きます", "not registered: import this file on the Music DB page")
+		return i18n.L("未登録: 曲DB 画面で振り分けてください", "not registered: assign it on the Music DB page")
 	}
 	return v
 }
@@ -378,6 +404,12 @@ func (a *App) proxy(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusBadRequest, []byte("bad request"), "text/plain")
 		return
 	}
+	info, compress := r.Header.Get("X-Eamuse-Info"), r.Header.Get("X-Compress")
+	root, binary, decodeErr := eamuse.Decode(body, info, compress)
+	if decodeErr == nil && len(root.Children) > 0 && root.Children[0].Name == "tracker" {
+		a.answerPoll(w, root.Get("srcid"), binary, info) // never relayed, not counted
+		return
+	}
 	a.bump("requests", map[string]any{"last_request": time.Now().Unix()})
 
 	origin, rest, ok := a.target(r)
@@ -394,16 +426,22 @@ func (a *App) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, compress := r.Header.Get("X-Eamuse-Info"), r.Header.Get("X-Compress")
 	var call *store.Call
 	var relayHeaders map[string]string
-	if root, binary, err := eamuse.Decode(body, info, compress); err != nil || len(root.Children) == 0 {
+	if decodeErr != nil || len(root.Children) == 0 {
 		logf(i18n.L("リクエストを解読できません (そのまま転送): %v", "cannot decode the request (relayed as is): %v"),
-			errOr(err, i18n.L("空のリクエスト", "empty request")))
+			errOr(decodeErr, i18n.L("空のリクエスト", "empty request")))
 	} else {
 		m := root.Children[0]
 		call = &store.Call{Model: root.Get("model"), PCBID: root.Get("srcid"), Module: m.Name,
 			Method: m.Get("method"), Req: m, Link: takeLink(root, m), Upstream: origin, TS: time.Now().Unix()}
+		if strings.HasSuffix(call.Module, "pc") && call.Method == "get" && call.Link.Get("sha256") == "" && call.PCBID != "" {
+			// a login without a report (the game runs without tracker_link.dll now): the earlier one
+			// no longer applies
+			if err := a.store.MachineUnreported(call.PCBID); err != nil {
+				logf("pc.get: %v", err)
+			}
+		}
 		if call.Link != nil {
 			// relay the request as the game would send it without tracker_link.dll
 			if out, headers, err := eamuse.Encode(root, binary, info); err != nil {
@@ -411,14 +449,15 @@ func (a *App) proxy(w http.ResponseWriter, r *http.Request) {
 			} else {
 				body, relayHeaders = out, headers
 			}
-			if call.Module == "services" && call.Method == "get" {
+			if call.Link.Get("sha256") != "" {
 				a.machineReport(r, call)
 			}
 		}
 	}
 
-	// omnimix must never reach a public server - not even through the tracker.
-	if call != nil && isOmni(call.Model) {
+	// omnimix must never reach a public server - not even through the tracker. With 2dxtra the
+	// revision is not 'S', so the music data file tracker_link.dll reported tells it too.
+	if call != nil && (isOmni(call.Model) || a.store.CabinetFor(call.PCBID, call.Model, nil).Omni == 1) {
 		if u, err := url.Parse(origin); err == nil && !isPrivateHost(u.Hostname()) {
 			a.bump("refused", nil)
 			logf(i18n.L("omnimix の公開サーバーへの転送を拒否: %s", "refused to relay omnimix to a public server: %s"), origin)
@@ -540,7 +579,56 @@ func (a *App) pointsAtSelf(r *http.Request, origin string) bool {
 	return false
 }
 
-// rewriteServices points every service at the tracker (/fwd/<id>/...), keeping the path.
+// answerPoll answers tracker_link.dll's poll from the music select (module "tracker", which the
+// game's ea3 sends to the service iidx_tracker): the song picked on the song page for this cabinet, if
+// any, as <tracker music_id@ chart@>. A pick not taken within a minute is dropped.
+func (a *App) answerPoll(w http.ResponseWriter, pcbid string, binary bool, info string) {
+	a.mu.Lock()
+	a.polled[pcbid] = time.Now()
+	p, picked := a.picks[pcbid]
+	delete(a.picks, pcbid)
+	a.mu.Unlock()
+	node := &eamuse.Node{Name: "tracker"}
+	node.Set("status", "0")
+	if picked && time.Since(p.at) < time.Minute {
+		node.Set("music_id", strconv.FormatInt(p.music, 10))
+		node.Set("chart", strconv.FormatInt(p.chart, 10))
+		logf(i18n.L("曲を選びました: %d (譜面 %d) を %s に", "picked %d (chart %d) for %s"), p.music, p.chart, pcbid)
+	}
+	out, headers, err := eamuse.Encode(&eamuse.Node{Name: "response", Children: []*eamuse.Node{node}}, binary, info)
+	if err != nil {
+		reply(w, http.StatusInternalServerError, []byte(err.Error()), "text/plain")
+		return
+	}
+	for k, v := range headers {
+		w.Header().Set(k, v)
+	}
+	reply(w, http.StatusOK, out, "application/octet-stream")
+}
+
+// Pick asks the game on the music select to jump to a song: the cabinet that polled last (within a
+// few seconds) takes it on its next poll.
+func (a *App) Pick(music, chart int64) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var pcbid string
+	var last time.Time
+	for id, at := range a.polled {
+		if at.After(last) {
+			pcbid, last = id, at
+		}
+	}
+	if pcbid == "" || time.Since(last) > 5*time.Second {
+		return "", i18n.New("選曲画面にいるゲームがありません (tracker_link.dll を入れたゲームで選曲画面を開いてください)",
+			"No game is on the music select (open the music select of a game with tracker_link.dll)")
+	}
+	a.picks[pcbid] = pick{music, chart, time.Now()}
+	return pcbid, nil
+}
+
+// rewriteServices points every service at the tracker (/fwd/<id>/...), keeping the path, and adds
+// the service "iidx_tracker": tracker_link.dll looks for it in ea3's list and adds nothing to any
+// request without it.
 func (a *App) rewriteServices(r *http.Request, body []byte, h http.Header) ([]byte, map[string]string, error) {
 	info := h.Get("X-Eamuse-Info")
 	doc, binary, err := eamuse.Decode(body, info, h.Get("X-Compress"))
@@ -567,6 +655,10 @@ func (a *App) rewriteServices(r *http.Request, body []byte, h http.Header) ([]by
 			query = "?" + u.RawQuery
 		}
 		item.Set("url", fmt.Sprintf("http://%s/fwd/%d%s%s", host, oid, u.EscapedPath(), query))
+	}
+	if services := doc.Find("services"); services != nil {
+		services.Children = append(services.Children, &eamuse.Node{Name: "item",
+			Attrs: []eamuse.Attr{{Name: "name", Value: "iidx_tracker"}, {Name: "url", Value: "http://" + host + "/"}}})
 	}
 	return eamuse.Encode(doc, binary, info)
 }

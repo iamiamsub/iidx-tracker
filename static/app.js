@@ -45,6 +45,8 @@ const state = {
   players: [],
   db: localStorage.getItem("db") || "", // music database being viewed (music IDs mean different songs per database)
   dbs: [],
+  set: localStorage.getItem("set") || "", // 2dxtra chart set being viewed ("" = the game's charts)
+  sets: [],
 };
 
 // ---------------------------------------------------------------- helpers
@@ -85,6 +87,9 @@ const prefName = (p) => PREFS[p] || (p ? t("地域{0}", p) : "-");
 const mono = (s) => `<span class="mono">${s}</span>`;
 // automatic categories of songs missing from another music DB come with that DB's name
 const catName = (c) => (c.other ? t("{0} に無い曲", c.other) : c.name);
+// A chart's page; set: a 2dxtra chart set (Kiraku, Kichiku, All-Scratch), whose plays are kept apart.
+const chartHref = (mid, chart, set) => `#/chart/${mid}/${chart}${set ? `?set=${encodeURIComponent(set)}` : ""}`;
+const setPill = (set) => (set ? ` <span class="pill set" title="${t("2dxtra の譜面")}">${esc(set)}</span>` : "");
 const versionName = (v) => (v == null ? "-" : VERSIONS[v] ?? `ver ${v}`);
 const arenaName = (c) => (c == null || c < 0 ? "-" : "ABCD"[Math.floor(c / 5)] + ((c % 5) + 1));
 
@@ -421,6 +426,8 @@ function hashParams() {
 }
 
 async function render() {
+  $("#top").classList.remove("open"); // the phone menu closes on every page change
+  $("#menu-btn").setAttribute("aria-expanded", false);
   const hash = location.hash || "#/";
   const base = hash.split("?")[0];
   if (base !== render.last) window.scrollTo(0, 0);
@@ -452,7 +459,23 @@ async function loadPlayers() {
     ? state.players.map((p) => `<option value="${esc(p.key)}">${esc(playerName(p.key))}</option>`).join("")
     : `<option value="">${t("(まだ記録がありません)")}</option>`;
   sel.value = state.player;
-  await loadDbs();
+  await Promise.all([loadDbs(), loadSets()]);
+}
+
+// the 2dxtra chart sets (the picker shows only when there are some); keeps the chosen one if it still exists
+async function loadSets() {
+  state.sets = (await api("/api/chartsets")).map((s) => s.name);
+  if (!state.sets.includes(state.set)) setSet("");
+  $("#set").innerHTML = `<option value="">${t("通常の譜面")}</option>` +
+    state.sets.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  $("#set").value = state.set;
+  $("#set-pick").hidden = !state.sets.length;
+}
+
+function setSet(name) {
+  state.set = name;
+  localStorage.setItem("set", name);
+  $("#set").value = name;
 }
 
 // the music database list; keeps the chosen one, else the player's default (their latest login's)
@@ -477,7 +500,7 @@ function setPlayer(key) {
 }
 
 // query parameters for views about the current player and music database
-const ctx = (extra = {}) => new URLSearchParams({key: state.player, db: state.db, ...extra});
+const ctx = (extra = {}) => new URLSearchParams({key: state.player, db: state.db, set: state.set, ...extra});
 
 // ---------------------------------------------------------------- views
 
@@ -486,11 +509,11 @@ function playsTable(plays, {showSong = true, showPlayer = false} = {}) {
   return `<div class="table-wrap"><table><thead><tr>
     <th>${t("日時")}</th>${showPlayer ? `<th>${t("プレイヤー")}</th>` : ""}${showSong ? `<th>${pick("曲", "Song")}</th>` : ""}<th>${t("譜面")}</th>
     <th></th><th class="num">EX</th><th class="num">BP</th><th>${t("オプション")}</th><th>${t("筐体")}</th></tr></thead><tbody>
-    ${plays.map((p) => `<tr class="click" data-href="#/chart/${p.music_id}/${p.chart}">
+    ${plays.map((p) => `<tr class="click" data-href="${chartHref(p.music_id, p.chart, p.chart_set)}">
       <td>${fmtDate(p.played_at)}${p.analyzed ? `<span class="pill analyze" title="${t("判定の詳細あり: 鍵盤ごとの判定と FAST/SLOW (譜面画面のプレイ履歴で行をクリック)")}">${t("アナライズ")}</span>` : ""}</td>
       ${showPlayer ? `<td>${esc(p.card_id ? playerName(p.card_id) : `IIDX ${p.iidx_id}`)}</td>` : ""}
       ${showSong ? `<td class="title">${esc(p.title ?? `#${p.music_id}`)}</td>` : ""}
-      <td>${chartTag(p.chart)} <span class="dim">${p.level ?? ""}</span></td>
+      <td>${chartTag(p.chart)}${setPill(p.chart_set)} <span class="dim">${p.level ?? ""}</span></td>
       <td>${lampBox(p.clear)} <span class="small">${LAMPS[p.clear ?? 0]}</span></td>
       <td class="num">${p.ex_score ?? "-"}</td>
       <td class="num">${p.miss_count >= 0 ? p.miss_count : "-"}</td>
@@ -502,6 +525,7 @@ function playsTable(plays, {showSong = true, showPlayer = false} = {}) {
 const cabinetPills = (p) => [
   p.cabinet ? `<span class="pill ${p.cabinet === "TDJ" ? "tdj" : ""}">${p.cabinet}</span>` : "",
   p.omni ? `<span class="pill omni">omni</span>` : "",
+  p.dxtra ? `<span class="pill dxtra" title="${t("2dxtra を入れた状態のプレイ")}">2dxtra</span>` : "",
 ].join(" ");
 
 function bindRowLinks(root) {
@@ -513,14 +537,16 @@ function bindRowLinks(root) {
 }
 
 async function viewHome(view) {
-  const [status, recent] = await Promise.all([api("/api/status"), api("/api/recent")]);
+  const [status, recent, unassigned] = await Promise.all([api("/api/status"), api("/api/recent"), api("/api/musicdata/unassigned")]);
   const st = status.stats;
   const banner = !status.upstream_ok
     ? `<div class="banner">${t("中継先サーバーが未設定です。{0}で本来の接続先 (asphyxia など) を指定してください。", `<a href="#/settings">${t("設定")}</a>`)}</div>`
     : st.last_request
       ? `<div class="banner ok">${t("中継中: {0}", esc(status.config.upstream))}${SEP}${t("最終通信 {0}", fmtDate(st.last_request))}</div>`
       : `<div class="banner">${t("まだゲームからの通信がありません。ゲームの接続先を {0} にしてください (別の PC のゲームは{1}を参照)。", mono(esc(gameUrls(status)[0][1])), `<a href="#/settings">${t("設定")}</a>`)}</div>`;
+  const waiting = unassigned.reduce((n, f) => n + f.plays, 0);
   view.innerHTML = `${banner}
+    ${waiting ? `<div class="banner">${t("まだ取り込んでいない曲データでのプレイが {0} 件あります。{1}でその曲データを取り込んでください。", waiting, `<a href="#/musicdb">${t("曲DB 画面")}</a>`)}</div>` : ""}
     <div class="panel"><div class="stats">
       <div class="stat"><b>${status.counts.plays}</b><span>${t("プレイ")}</span></div>
       <div class="stat"><b>${status.counts.cards}</b><span>${t("カード")}</span></div>
@@ -552,14 +578,14 @@ async function viewPlayer(view, keyPart) {
   const key = keyPart ? decodeURIComponent(keyPart) : state.player;
   if (!key) { view.innerHTML = `<p class="dim">${t("まだ記録がありません")}</p>`; return; }
   if (key !== state.player) setPlayer(key);
-  const d = await api(`/api/player?${new URLSearchParams({key, db: state.db})}`);
+  const d = await api(`/api/player?${new URLSearchParams({key, db: state.db, set: state.set})}`);
   const cur = d.profiles[d.profiles.length - 1];
   const last = d.sessions[d.sessions.length - 1];
-  // DJ POINT as the game computed it: pc.get at login, replaced by pc.save at card out
-  const withDjp = d.sessions.filter((s) => s.djpoint_sp != null || s.djpoint_dp != null);
+  // DJ POINT as the game computed it: pc.get at login, replaced by pc.save at card out (the game's charts only)
+  const withDjp = state.set ? [] : d.sessions.filter((s) => s.djpoint_sp != null || s.djpoint_dp != null);
   const gameDjp = withDjp[withDjp.length - 1];
   view.innerHTML = `
-    <h1>${esc(cur ? cur.name : `IIDX ID ${key.slice(5)}`)} <span class="dim small">${cur ? esc(cur.iidx_id) : ""}</span></h1>
+    <h1>${esc(cur ? cur.name : `IIDX ID ${key.slice(5)}`)} <span class="dim small">${cur ? esc(cur.iidx_id) : ""}</span>${setPill(state.set)}</h1>
     <div class="grid">
       <div class="panel"><h2>${t("プロフィール")}</h2>
         ${cur ? `<table>
@@ -577,6 +603,7 @@ async function viewPlayer(view, keyPart) {
         </table>` : `<p class="dim">${t("このプレイヤーのログインはまだ記録されていません (トラッカー起動前にログインした)。")}</p>`}
       </div>
       <div class="panel"><h2>${t("ノーツレーダー")} <select id="radar-style"><option value="sp">SP</option><option value="dp">DP</option></select></h2>
+        <p class="dim small">${state.set ? t("記録したプレイから、ゲームと同じ式で計算した値 (ゲームの値は 2dxtra を起動してからのプレイしか知らない)") : t("ゲームが計算した値。最後のプレイが 2dxtra の譜面だったクレジットの値は、その譜面セットのものなので除く")}</p>
         <div id="radar" class="chart-box"></div></div>
     </div>
     ${d.profiles.length > 1 ? `<div class="panel"><h2>${t("プロフィール履歴")}</h2><div class="table-wrap"><table>
@@ -589,7 +616,7 @@ async function viewPlayer(view, keyPart) {
       <div id="lamps" class="chart-box"></div></div>
     <div class="grid">
       <div class="panel"><h2>${t("日別プレイ数 (180日)")}</h2><div id="per-day" class="chart-box"></div></div>
-      <div class="panel"><h2>${t("レーダー推移")} <span class="dim small">${t("合計値")}</span></h2><div id="radar-history" class="chart-box"></div></div>
+      ${state.set ? "" : `<div class="panel"><h2>${t("レーダー推移")} <span class="dim small">${t("合計値")}</span></h2><div id="radar-history" class="chart-box"></div></div>`}
     </div>
     ${withDjp.length ? `<div class="panel"><h2>${t("DJ POINT 推移")} <select id="djp-style"><option value="sp">SP</option><option value="dp">DP</option></select>
       <span class="dim small">${t("ゲームが計算した値 (ログインごと)")}</span></h2>
@@ -602,7 +629,14 @@ async function viewPlayer(view, keyPart) {
   const radarOf = (s, style) => (s && s[`radar_${style}`] ? s[`radar_${style}`].split(/\s+/).map((v) => +v / 100) : null);
   const drawRadar = () => {
     const style = $("#radar-style").value;
-    const withRadar = d.sessions.filter((s) => radarOf(s, style));
+    if (state.set) { // computed from the set's bests (the logins' values belong to whichever set a credit ended on)
+      const vals = (d.set_radar || {})[style.toUpperCase()];
+      if (vals) radarChart($("#radar"), RADAR_ATTR.map((a) => vals[a] / 100));
+      else $("#radar").innerHTML = `<p class="dim">${d.set_charts ? t("データがありません") : t("曲DB 画面で 2dxtra.sqlite を取り込むと、この譜面セットのノーツレーダーを計算できます")}</p>`;
+      return;
+    }
+    // the game's value, from the logins whose radar belongs to the game's charts
+    const withRadar = d.sessions.filter((s) => radarOf(s, style) && s[`radar_${style}_set`] == null);
     const vals = radarOf(withRadar[withRadar.length - 1], style);
     if (vals) radarChart($("#radar"), RADAR_ATTR.map((a) => vals[a]));
     else $("#radar").innerHTML = `<p class="dim">${t("データがありません")}</p>`;
@@ -654,9 +688,12 @@ async function viewSongs(view) {
   const level = q.level ?? localStorage.getItem("songs.level") ?? "12";
   const category = q.category ?? "";
   const search = q.q ?? "";
-  const cats = await api(`/api/categories?${ctx()}`);
+  const set = state.set;
   const params = ctx({style, level, category, q: search});
-  const rows = await api(`/api/songs?${params}`);
+  const songs = api(`/api/songs?${params}`);
+  songs.catch(() => {}); // reported where it is awaited
+  view.innerHTML = `<p class="dim">${t("読み込み中…")}</p>`;
+  const cats = await api(`/api/categories?${ctx()}`);
   localStorage.setItem("songs.style", style);
   localStorage.setItem("songs.level", level);
 
@@ -691,8 +728,8 @@ async function viewSongs(view) {
       <th class="sort num" data-k="rate">${t("レート")}</th><th>DJ LEVEL</th><th class="sort num" data-k="best_miss">BP</th>
       <th class="sort num" data-k="djpoint" title="${t("DJ POINT (ベストEX・ベストランプ・DJ LEVEL から計算)")}">DJP</th>
       <th class="sort num" data-k="plays">${t("回数")}</th><th class="sort" data-k="version">${t("バージョン")}</th>
-      <th class="sort" data-k="last_played">${t("最終プレイ")}</th></tr></thead><tbody></tbody></table></div>
-      <div id="more" style="margin-top:10px"></div></div>`;
+      <th class="sort" data-k="last_played">${t("最終プレイ")}</th></tr></thead>
+      <tbody><tr><td colspan="13" class="dim">${t("読み込み中…")}</td></tr></tbody></table></div></div>`;
 
   $("#f-style").value = style;
   $("#f-level").value = level;
@@ -728,24 +765,16 @@ async function viewSongs(view) {
   ["f-style", "f-level", "f-cat"].forEach((id) => $(`#${id}`).addEventListener("change", go));
   $("#f-q").addEventListener("keydown", (e) => e.key === "Enter" && go());
 
+  const tbody = $("#songs tbody");
+  const rows = await songs;
+  if (!tbody.isConnected) return; // moved on meanwhile
   for (const r of rows) r.rate = r.best_ex != null && r.notes ? r.best_ex / (r.notes * 2) : null;
-  let sortKey = localStorage.getItem("songs.sort") || "title", sortDir = 1, limit = 500;
-  const draw = () => {
-    localStorage.setItem("songs.played", played.checked ? "1" : "0");
-    localStorage.setItem("songs.split", split.checked ? "1" : "0");
-    let list = played.checked ? rows.filter((r) => r.plays) : rows.slice();
-    if (!split.checked) list = bySong(list);
-    list.sort((a, b) => {
-      const x = a[sortKey], y = b[sortKey];
-      if (x == null && y == null) return 0;
-      if (x == null) return 1;
-      if (y == null) return -1;
-      return (typeof x === "string" ? x.localeCompare(y, "ja") : x - y) * sortDir;
-    });
-    $("#count").textContent = split.checked ? t("{0} 譜面", list.length) : t("{0} 曲", list.length);
-    $("#songs tbody").innerHTML = list.slice(0, limit).map((r) => `
-      <tr class="click" data-href="#/chart/${r.music_id}/${r.chart}">
-        <td><input type="checkbox" class="sel" value="${r.music_id}"></td>
+  const collator = new Intl.Collator("ja");
+  const picked = new Set();
+  let sortKey = localStorage.getItem("songs.sort") || "title", sortDir = 1, list = [], rowH = 0, shown = "";
+  const rowHtml = (r) => `
+      <tr class="click" data-href="${chartHref(r.music_id, r.chart, set)}">
+        <td><input type="checkbox" class="sel" value="${r.music_id}"${picked.has(r.music_id) ? " checked" : ""}></td>
         <td class="num">${r.level}</td>
         <td class="title">${esc(r.title ?? `#${r.music_id}`)}<div class="dim small">${esc(r.artist ?? "")}</div></td>
         <td>${r.charts ? chips(r) : chartTag(r.chart)}</td>
@@ -756,16 +785,52 @@ async function viewSongs(view) {
         <td class="num">${djpText(r.djpoint)}</td>
         <td class="num">${r.plays ?? ""}</td>
         <td class="small">${esc(versionName(r.version))}</td>
-        <td class="small">${r.last_played ? fmtDate(r.last_played, false) : ""}</td></tr>`).join("");
-    $("#more").innerHTML = list.length > limit ? `<button id="more-btn">${t("さらに表示 ({0})", list.length - limit)}</button>` : "";
-    if (list.length > limit) $("#more-btn").onclick = () => { limit += 1000; draw(); };
-    view.querySelectorAll(".chart-chip").forEach((b) => b.addEventListener("click", (e) => {
-      e.stopPropagation(); // the row itself links to the chart page
-      chosen.set(+b.dataset.mid, +b.dataset.chart);
-      draw();
-    }));
-    bindRowLinks($("#songs"));
+        <td class="small">${r.last_played ? fmtDate(r.last_played, false) : ""}</td></tr>`;
+  const pad = (n) => (n > 0 ? `<tr class="pad" style="height:${n * rowH}px"><td colspan="13"></td></tr>` : "");
+  // Only the rows near the screen are in the page, the rest is blank space of the same height:
+  // thousands of rows take the browser seconds to lay out.
+  const paint = (force) => {
+    if (!tbody.isConnected) return window.removeEventListener("scroll", onScroll);
+    if (!rowH && list.length) {
+      tbody.innerHTML = rowHtml(list[0]);
+      rowH = tbody.firstElementChild.offsetHeight || 40;
+    }
+    const first = Math.max(0, Math.floor(-tbody.getBoundingClientRect().top / (rowH || 40)) - 30);
+    const last = Math.min(list.length, first + Math.ceil(innerHeight / (rowH || 40)) + 60);
+    if (!force && shown === `${first}:${last}`) return;
+    shown = `${first}:${last}`;
+    tbody.innerHTML = pad(first) + list.slice(first, last).map(rowHtml).join("") + pad(list.length - last);
   };
+  const onScroll = () => paint(false);
+  window.addEventListener("scroll", onScroll, {passive: true});
+  const draw = () => {
+    localStorage.setItem("songs.played", played.checked ? "1" : "0");
+    localStorage.setItem("songs.split", split.checked ? "1" : "0");
+    list = played.checked ? rows.filter((r) => r.plays) : rows.slice();
+    if (!split.checked) list = bySong(list);
+    list.sort((a, b) => {
+      const x = a[sortKey], y = b[sortKey];
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (typeof x === "string" ? collator.compare(x, y) : x - y) * sortDir;
+    });
+    $("#count").textContent = split.checked ? t("{0} 譜面", list.length) : t("{0} 曲", list.length);
+    rowH = 0; // one song per row or one chart per row: measured again
+    paint(true);
+  };
+  tbody.addEventListener("click", (e) => {
+    const chip = e.target.closest(".chart-chip");
+    if (chip) { // shows that chart in the row; the row itself links to the chart page
+      chosen.set(+chip.dataset.mid, +chip.dataset.chart);
+      return draw();
+    }
+    const tr = e.target.closest("tr[data-href]");
+    if (tr && !e.target.closest("input,button,a,select")) location.hash = tr.dataset.href;
+  });
+  tbody.addEventListener("change", (e) => {
+    if (e.target.classList.contains("sel")) picked[e.target.checked ? "add" : "delete"](+e.target.value);
+  });
   played.addEventListener("change", draw);
   split.addEventListener("change", draw);
   view.querySelectorAll("th.sort").forEach((th) => th.addEventListener("click", () => {
@@ -774,11 +839,13 @@ async function viewSongs(view) {
     localStorage.setItem("songs.sort", sortKey);
     draw();
   }));
-  $("#sel-all").addEventListener("change", (e) =>
-    view.querySelectorAll(".sel").forEach((c) => (c.checked = e.target.checked)));
+  $("#sel-all").addEventListener("change", (e) => {
+    for (const r of list) picked[e.target.checked ? "add" : "delete"](r.music_id);
+    paint(true);
+  });
   const bulk = async (op) => {
     const id = $("#bulk-cat").value;
-    const ids = [...new Set([...view.querySelectorAll(".sel:checked")].map((c) => +c.value))];
+    const ids = [...picked];
     if (!id) return toast(t("先にカテゴリを作成してください"));
     if (!ids.length) return toast(t("曲を選択してください"));
     await post("/api/categories/update", {id: +id, [op]: ids});
@@ -790,7 +857,9 @@ async function viewSongs(view) {
 }
 
 async function viewChart(view, mid, chart) {
-  const d = await api(`/api/chart?${ctx({music: mid, chart})}`);
+  const set = hashParams().set || "";
+  if (set !== state.set && (set === "" || state.sets.includes(set))) setSet(set);
+  const d = await api(`/api/chart?${ctx({music: mid, chart, set})}`);
   const s = d.song;
   const plays = d.plays;
   const notes = d.notes;
@@ -801,7 +870,9 @@ async function viewChart(view, mid, chart) {
   };
   const dj = djLevel(best.ex, notes);
   view.innerHTML = `
-    <h1>${esc(s ? s.title : `#${mid}`)} ${chartTag(+chart)} <span class="dim">☆${s ? s.levels[chart] : plays[0]?.level ?? "?"}</span></h1>
+    <div class="row" style="justify-content:space-between">
+      <h1>${esc(s ? s.title : `#${mid}`)} ${chartTag(+chart)}${setPill(set)} <span class="dim">☆${s ? s.levels[chart] : plays[0]?.level ?? "?"}</span></h1>
+      <button id="pick-game" title="${t("tracker_link.dll を入れたゲームが選曲画面にいるとき、この譜面にカーソルを合わせます (サブ画面の予約と同じ動き)")}">${t("ゲームでこの曲を選ぶ")}</button></div>
     <p class="dim">${esc(s ? `${s.artist}${SEP}${s.genre}${SEP}${versionName(s.version)}` : t("曲DB未登録"))}${SEP}ID ${mid}
      ${SEP}${t("ノーツ {0}", notes ?? t("不明"))}${d.notes_source === "observed" ? ` (${t("プレイから推定")})` : ""}${SEP}${esc(playerName(state.player))}</p>
     <div class="panel"><div class="stats">
@@ -843,6 +914,8 @@ async function viewChart(view, mid, chart) {
         <td class="small">${esc(tData(p.gauge) ?? "")}</td>
         <td>${cabinetPills(p)}</td></tr>`).join("")}
       </tbody></table></div></div>`;
+  $("#pick-game").onclick = () => post("/api/pick", {music_id: +mid, chart: +chart})
+    .then(() => toast(t("ゲームの選曲画面でこの譜面に合わせます"), true)).catch((e) => toast(e.message));
 
   if (!plays.length) return;
   const xLabels = [[0, fmtDate(plays[0].played_at, false)], [plays.length - 1, fmtDate(plays[plays.length - 1].played_at, false)]];
@@ -964,14 +1037,18 @@ function judgePanel(j, p) {
 }
 
 async function viewMusicDb(view) {
-  const [dbs, machines] = await Promise.all([api("/api/musicdbs"), api("/api/machines")]);
+  const [dbs, machines, sets, unassigned] = await Promise.all([api("/api/musicdbs"), api("/api/machines"),
+    api("/api/chartsets"), api("/api/musicdata/unassigned")]);
   view.innerHTML = `
     <h1>${t("曲DB")}</h1>
+    ${unassigned.length ? `<div class="panel"><h2>${t("取り込み待ちの曲データ")}</h2>
+      <p class="dim small">${t("ゲームが読み込んでいるのに、トラッカーにまだ取り込まれていない曲データです。これらのプレイは記録してありますが、取り込むまではどの曲DB にも入りません。ゲームの {0} (omnimix なら data_mods の中の同じ場所) にある同じファイルを取り込むと、プレイはその曲DB に入ります。", mono(esc("data\\info\\<n>\\")))}</p>
+      ${unassigned.map(unassignedFile).join("")}</div>` : ""}
     <div class="panel"><h2>${t("music_data.bin / music_omni.bin を取り込む")}</h2>
-      <p class="dim small">${t("曲名・レベル・バージョンの表示とカテゴリ分けに使います。omni の新しい版を取り込むと、同じゲームバージョンの omni 曲DBに自動で追加されます (altfix 用の曲データやファイル名の「omni」で判定)。")}</p>
+      <p class="dim small">${t("曲名・レベル・バージョンの表示とカテゴリ分けに使います。取り込み先の曲DB を選んでください。新しい版を元の曲DB に取り込むと、追加・削除された曲が記録されます。新しい曲DB は、altfix 用の曲データかファイル名に「omni」があれば omni になります (あとで変えられます)。")}</p>
       <div class="row">
         <input type="file" id="mdb-file" accept=".bin">
-        <select id="mdb-target"><option value="auto">${t("自動判定")}</option>
+        <select id="mdb-target"><option value="">${t("取り込み先を選んでください")}</option>
           ${dbs.map((d) => `<option value="${d.id}">${t("{0} に追加", esc(d.name))}</option>`).join("")}
           <option value="new">${t("新しい曲DBとして")}</option></select>
         <input id="mdb-name" placeholder="${t("新しい曲DBの名前 (省略可)")}" style="display:none">
@@ -987,42 +1064,55 @@ async function viewMusicDb(view) {
         `${t("譜面の解析: {0}", fmtDate(scanned_at))}${SEP}${t("{0} 曲 {1} 譜面", songs, charts)}${mods ? `${SEP}mod: ${esc(mods)}` : ""}${
           skipped ? `${SEP}${t("この曲DBに無い {0} 曲は除外", skipped)}` : ""}${errors ? `${SEP}${t("読めない {0} 曲", errors)}` : ""}`)(d.scans[0])
         : t("譜面の解析: まだ (下の「譜面データからノーツ数を取り込む」)")}</p>
+      ${clearButtons(d)}
       <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>${t("取り込み日時")}</th><th>${t("ファイル")}</th>
-        <th class="num">${t("曲数")}</th><th class="num">${pick("追加", "Added")}</th><th class="num">${pick("削除", "Removed")}</th></tr></thead><tbody>
+        <th class="num">${t("曲数")}</th><th class="num">${pick("追加", "Added")}</th><th class="num">${pick("削除", "Removed")}</th><th></th></tr></thead><tbody>
         ${d.imports.map((i) => `<tr><td>${fmtDate(i.imported_at)}</td><td>${esc(i.filename)}</td>
-          <td class="num">${i.song_count}</td><td class="num">+${i.added}</td><td class="num">-${i.removed}</td></tr>`).join("")}
+          <td class="num">${i.song_count}</td><td class="num">+${i.added}</td><td class="num">-${i.removed}</td>
+          <td><button class="danger" data-undo="${i.id}" data-db="${d.id}" data-label="${esc(`${i.filename} (${fmtDate(i.imported_at)})`)}">${t("削除")}</button></td></tr>`).join("")}
       </tbody></table></div></div>`).join("")}
     <div class="panel"><h2>${t("tracker_link.dll からの報告")}</h2>
-      <p class="dim small">${t("tracker_link.dll (トラッカーに同梱) を入れたゲームは、起動時に読み込んだ曲データ (ファイル名・サイズ・SHA-256) をトラッカーに知らせます。その筐体 (PCBID) のプレイは、報告された曲データの曲DB に記録されます。「未登録」の曲データは、上の「取り込む」で同じファイルを取り込むと紐付きます。")}</p>
-      ${machines.length ? `<div class="table-wrap"><table><thead><tr><th>${t("最終起動")}</th><th>PCBID</th><th>${t("曲DB")}</th>
-        <th>${t("ファイル")}</th><th>${t("ゲーム")}</th><th>DLL</th><th>${t("接続元")}</th></tr></thead><tbody>
+      <p class="dim small">${t("tracker_link.dll (トラッカーに同梱) を入れたゲームは、ログインのたびに、読み込んだ曲データ (ファイル名・サイズ・SHA-256) と 2dxtra の有無をトラッカーに知らせます。その筐体 (PCBID) のプレイは、報告された曲データの曲DB に記録されます (omnimix かどうかも曲DB で決まります)。「未登録」の曲データは、同じファイルを取り込むか、「取り込み待ちの曲データ」で曲DB を選ぶと紐付きます。")}</p>
+      ${machines.length ? `<div class="table-wrap"><table><thead><tr><th>${t("最終報告")}</th><th>PCBID</th><th>${t("曲DB")}</th>
+        <th>${t("ファイル")}</th><th>2dxtra</th><th>${t("ゲーム")}</th><th>DLL</th><th>${t("接続元")}</th></tr></thead><tbody>
         ${machines.map((m) => `<tr><td>${fmtDate(m.booted_at)}</td><td class="mono">${esc(m.pcbid)}</td>
-          <td>${m.musicdb_id == null ? `<span class="dim" title="${t("このファイルを上で取り込むと紐付きます")}">${t("未登録")}</span>` : esc(m.musicdb)}</td><td>${esc(m.filename)}</td>
+          <td>${m.musicdb_id == null ? `<span class="dim">${t("未登録")}</span>` : esc(m.musicdb)}</td><td>${esc(m.filename)}</td>
+          <td>${m.dxtra == null ? "-" : m.dxtra ? t("あり") : t("なし")}</td>
           <td>${esc(m.game)}</td><td>${esc(m.altfix)}</td><td class="mono">${esc(m.remote)}</td></tr>`).join("")}
       </tbody></table></div>` : `<p class="dim small">${t("まだ報告がありません。")}</p>`}</div>
     <div class="panel"><h2>${t("譜面データからノーツ数を取り込む")}</h2>
-      <p class="dim small">${t("スコアレート・DJ LEVEL・DJ POINT の計算に使います (未取り込みでも、完走したプレイの判定数から推定します)。ゲームのフォルダ ({0} と {1} があるフォルダ) を指定すると、全曲の譜面 (.1) を読んでノーツ数を数えます。パスはトラッカーを動かしている PC のものです。", mono("data"), mono("data_mods"))}</p>
+      <p class="dim small">${t("スコアレート・DJ LEVEL・DJ POINT の計算に使います (未取り込みでも、完走したプレイの判定数から推定します)。ゲームのフォルダ ({0} と {1} があるフォルダ) を指定すると、全曲の譜面 (.1) を読んでノーツ数を数えます。パスはトラッカーを動かしている PC のものです。「このPCのフォルダを選ぶ」なら、このブラウザの PC にあるフォルダを読みます (トラッカーが LAN の別の PC でも使えます)。ブラウザが「アップロード」の確認を出しますが、送るのは譜面の場所を調べるための目録とノーツ数だけです。", mono("data"), mono("data_mods"))}</p>
       <p class="dim small">${t("omnimix を {0} に入れている (layeredfs) 場合は、ゲームと同じ順番で重ねて読みます (mod はフォルダ名の順に優先、{1} → {2} → フォルダの順)。omnimix を {3} に直接上書きしている場合は、mod のチェックをすべて外してください。取り込んだノーツ数は、選んだ曲DB に収録されている曲だけに紐付きます。", mono("data_mods"), mono("-p0.ifs"), mono(".ifs"), mono("data"))}</p>
       <div class="row"><input id="snd-path" placeholder="${t("例: {0}", "D:\\bemani\\iidx33")}" style="min-width:380px">
-        <button id="snd-check">${t("フォルダを確認")}</button></div>
+        <button id="snd-check">${t("フォルダを確認")}</button>
+        <span class="dim small">${t("または")}</span>
+        <button id="snd-pick">${t("このPCのフォルダを選ぶ")}</button><input type="file" id="snd-files" webkitdirectory hidden></div>
       <div id="snd-detail" style="margin-top:10px"></div></div>
     <div class="panel"><h2>${t("ノーツ数の JSON を取り込む")}</h2>
       <p class="dim small">${t("iidx-datatools の {0} が出力する JSON ({1}) を選んだ曲DB に取り込みます。譜面データの解析結果がある譜面は上書きしません。", mono("parse_chart_notecounts.py"), mono(`{"${t("曲ID")}": {"SPA": 1234, ...}}`))}</p>
       <div class="row"><input type="file" id="notes-file" accept=".json">
         <select id="notes-db"><option value="">${t("紐付ける曲DB を選んでください")}</option>
           ${dbs.map((d) => `<option value="${d.id}">${esc(d.name)} (IIDX${d.game_version}${SEP}${t("{0} 曲", d.songs)})</option>`).join("")}</select>
-        <button id="notes-go">${t("取り込む")}</button></div></div>`;
+        <button id="notes-go">${t("取り込む")}</button></div></div>
+    <div class="panel"><h2>${t("2dxtra の譜面セットを取り込む")}</h2>
+      <p class="dim small">${t("2dxtra が作る譜面 (Kiraku・Kichiku・All-Scratch) の一覧とノーツ数を、2dxtra.dll と同じフォルダの {0} から読みます。パスはトラッカーを動かしている PC のものです。「このPCのファイルを選ぶ」なら、このブラウザの PC にあるファイルから譜面の一覧 (数 MB) だけを読んで送ります (譜面そのものは送りません)。どちらもゲームを終えてから取り込んでください。これらの譜面のプレイは tracker_link.dll がカードアウト時にまとめて送り、通常の譜面とは別に集計します (上の「譜面セット」で切り替えて見られます)。", mono("2dxtra.sqlite"))}</p>
+      <div class="row"><input id="dx-path" placeholder="${t("例: {0}", "D:\\bemani\\iidx33\\2dxtra.sqlite")}" style="min-width:380px">
+        <button id="dx-go">${t("取り込む")}</button>
+        <span class="dim small">${t("または")}</span>
+        <button id="dx-pick">${t("このPCのファイルを選ぶ")}</button><input type="file" id="dx-file" accept=".sqlite" hidden></div>
+      <p class="dim small" id="dx-progress"></p>
+      <div class="small">${sets.length ? sets.map((s) => `<div class="row" style="margin-top:6px">${t("{0}: {1} 譜面・{2} プレイ", esc(s.name), s.charts, s.plays)}${
+        s.charts ? ` <button class="danger" data-delset="${esc(s.name)}">${t("削除")}</button>` : ""}</div>`).join("")
+        : `<p class="dim">${t("まだありません")}</p>`}</div></div>`;
 
   const sndPath = $("#snd-path");
   try { sndPath.value = localStorage.getItem("sound.path") || ""; } catch {}
-  $("#snd-check").onclick = async () => {
-    try {
-      const r = await api(`/api/sound/inspect?${new URLSearchParams({path: sndPath.value})}`);
-      try { localStorage.setItem("sound.path", sndPath.value); } catch {}
+  // the mods to lay over data and the database to fill, then run: scan(mods, db, progress)
+  const soundDetail = (root, mods, scan) => {
       $("#snd-detail").innerHTML = `
-        <p class="small">${t("ゲームのフォルダ: {0}", mono(esc(r.root)))}</p>
-        ${r.mods.length ? `<p class="small">${t("重ねる mod (data_mods、上ほど優先):")}</p>
-          ${r.mods.map((m) => `<label class="small" style="display:block"><input type="checkbox" class="snd-mod" value="${esc(m)}" checked> ${esc(m)}</label>`).join("")}`
+        <p class="small">${t("ゲームのフォルダ: {0}", mono(esc(root)))}</p>
+        ${mods.length ? `<p class="small">${t("重ねる mod (data_mods、上ほど優先):")}</p>
+          ${mods.map((m) => `<label class="small" style="display:block"><input type="checkbox" class="snd-mod" value="${esc(m)}" checked> ${esc(m)}</label>`).join("")}`
           : `<p class="dim small">${t("data_mods に sound を含む mod はありません (data だけを読みます)。")}</p>`}
         <div class="row" style="margin-top:8px">
           <select id="snd-db"><option value="">${t("紐付ける曲DB を選んでください")}</option>
@@ -1034,9 +1124,10 @@ async function viewMusicDb(view) {
         if (!db) return toast(t("紐付ける曲DB を選んでください"));
         const mods = [...view.querySelectorAll(".snd-mod:checked")].map((c) => c.value);
         $("#snd-go").disabled = true;
-        $("#snd-result").innerHTML = `<p class="dim small">${t("解析中…")}</p>`;
+        const progress = (msg) => ($("#snd-result").innerHTML = `<p class="dim small">${esc(msg)}</p>`);
+        progress(t("解析中…"));
         try {
-          const s = await post("/api/sound/scan", {path: sndPath.value, mods, musicdb_id: +db});
+          const s = await scan(mods, +db, progress);
           $("#snd-result").innerHTML = `<p class="small">${t("{0} 曲 {1} 譜面を取り込みました ({2} 秒)", s.songs, s.charts, s.seconds.toFixed(1))}${
             s.skipped ? `${SEP}${t("選んだ曲DB に無い {0} 曲は除外", s.skipped)}` : ""}</p>
             ${s.errors ? `<details class="small"><summary>${t("読めなかった {0} 曲", s.errors)}</summary>
@@ -1049,18 +1140,31 @@ async function viewMusicDb(view) {
           $("#snd-go").disabled = false;
         }
       };
+  };
+  $("#snd-check").onclick = async () => {
+    try {
+      const r = await api(`/api/sound/inspect?${new URLSearchParams({path: sndPath.value})}`);
+      try { localStorage.setItem("sound.path", sndPath.value); } catch {}
+      soundDetail(r.root, r.mods, (mods, db) => post("/api/sound/scan", {path: sndPath.value, mods, musicdb_id: db}));
     } catch (e) { toast(e.message); }
+  };
+  $("#snd-pick").onclick = () => $("#snd-files").click();
+  $("#snd-files").onchange = (e) => {
+    const game = gameFolder(e.target.files);
+    if (!game.files.size) return toast(t("選んだフォルダに data の sound フォルダがありません"));
+    soundDetail(t("{0} (このPC)", game.name), game.mods, (mods, db, progress) => browserScan(game, mods, db, progress));
   };
 
   $("#mdb-target").addEventListener("change", (e) => ($("#mdb-name").style.display = e.target.value === "new" ? "" : "none"));
   $("#mdb-go").onclick = async () => {
     const f = $("#mdb-file").files[0];
     if (!f) return toast(t("ファイルを選択してください"));
+    if (!$("#mdb-target").value) return toast(t("取り込み先の曲DB を選んでください"));
     const p = new URLSearchParams({filename: f.name, target: $("#mdb-target").value, name: $("#mdb-name").value});
     try {
       const r = await api(`/api/musicdb/upload?${p}`, {method: "POST", body: await f.arrayBuffer()});
       toast(r.duplicate ? t("同じファイルは取り込み済みです") :
-        t("{0} 曲を取り込みました (追加 {1} ／ 削除 {2})", r.songs, r.added, r.removed) + (r.detected ? pick(" ・自動判定", " · auto-detected") : ""), true);
+        t("{0} 曲を取り込みました (追加 {1} ／ 削除 {2})", r.songs, r.added, r.removed), true);
       await loadDbs();
       render();
     } catch (e) { toast(e.message); }
@@ -1089,6 +1193,317 @@ async function viewMusicDb(view) {
       toast(t("{0} 譜面のノーツ数を取り込みました", r.imported), true);
     } catch (e) { toast(e.message); }
   };
+  view.querySelectorAll("[data-undo]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(t("{0} の取り込みを削除しますか？ 曲名などは残りの取り込みから作り直します。プレイ記録は消えません。", b.dataset.label))) return;
+    try {
+      await post("/api/musicdb/update", {id: +b.dataset.db, delete_import: +b.dataset.undo});
+      toast(t("削除しました"), true);
+      await loadDbs();
+      render();
+    } catch (e) { toast(e.message); }
+  }));
+  view.querySelectorAll("[data-clear]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(t("「{0}」を削除しますか？ (プレイ記録は消えません)", b.dataset.label))) return;
+    try {
+      await post("/api/musicdb/update", {id: +b.dataset.db, clear: b.dataset.clear});
+      toast(t("削除しました"), true);
+      await loadDbs();
+      render();
+    } catch (e) { toast(e.message); }
+  }));
+  view.querySelectorAll("[data-delset]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(t("譜面セット「{0}」の譜面一覧を削除しますか？ (プレイ記録は消えません)", b.dataset.delset))) return;
+    try {
+      await post("/api/chartsets/delete", {name: b.dataset.delset});
+      toast(t("削除しました"), true);
+      await loadSets();
+      render();
+    } catch (e) { toast(e.message); }
+  }));
+  view.querySelectorAll("[data-pending]").forEach((box) => {
+    const sel = box.querySelector("select"), name = box.querySelector("input[type=text]");
+    sel.addEventListener("change", () => (name.style.display = sel.value === "new" ? "" : "none"));
+    box.querySelector("button").addEventListener("click", async () => {
+      const f = box.querySelector("input[type=file]").files[0];
+      if (!f) return toast(t("ファイルを選択してください"));
+      if (!sel.value) return toast(t("取り込み先の曲DB を選んでください"));
+      // the tracker refuses a file other than the one the game reported
+      const p = new URLSearchParams({filename: f.name, target: sel.value, name: name.value, expect: box.dataset.pending});
+      try {
+        const r = await api(`/api/musicdb/upload?${p}`, {method: "POST", body: await f.arrayBuffer()});
+        toast(t("{0} 曲を取り込みました (追加 {1} ／ 削除 {2})", r.songs, r.added, r.removed), true);
+        await loadDbs();
+        render();
+      } catch (e) { toast(e.message); }
+    });
+  });
+  view.querySelectorAll("[data-assign]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(t("この曲データのプレイを「{0}」に入れますか？", b.dataset.name))) return;
+    try {
+      await post("/api/musicdata/assign", {sha256: b.dataset.assign, musicdb_id: +b.dataset.db});
+      toast(t("振り分けました"), true);
+      render();
+    } catch (e) { toast(e.message); }
+  }));
+  $("#dx-pick").onclick = () => $("#dx-file").click();
+  $("#dx-file").onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const progress = (msg) => ($("#dx-progress").textContent = msg);
+    try {
+      progress(t("譜面の一覧を読んでいます… {0}", 0));
+      const list = await read2dxtra(f, progress);
+      progress(t("送信しています…"));
+      const r = await post("/api/chartsets/upload", list);
+      progress("");
+      toast(t("{0} 譜面を取り込みました ({1} プレイをセットに振り分け)", r.charts, r.plays), true);
+      await loadSets();
+      render();
+    } catch (err) {
+      progress("");
+      toast(err.message);
+    }
+  };
+  const dxPath = $("#dx-path");
+  try { dxPath.value = localStorage.getItem("dxtra.path") || ""; } catch {}
+  $("#dx-go").onclick = async () => {
+    try {
+      const r = await post("/api/chartsets/import", {path: dxPath.value});
+      try { localStorage.setItem("dxtra.path", dxPath.value); } catch {}
+      toast(t("{0} 譜面を取り込みました ({1} プレイをセットに振り分け)", r.charts, r.plays), true);
+      await loadSets();
+      render();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+// ---- counting the charts of a game folder on the browser's PC (the tracker may be on another) ----
+
+// The sound folders of a game folder picked on this PC (the game folder, data or sound): the files a
+// scan looks at, by path in the game folder ("data/sound/01000.ifs"), and the mods with a sound folder.
+function gameFolder(list) {
+  const files = new Map(), mods = new Set();
+  let name = "";
+  for (const f of list) {
+    const rel = f.webkitRelativePath;
+    name ||= rel.split("/")[0];
+    let m = rel.match(/(?:^|\/)(data\/sound|data_mods\/([^/]+)\/sound)\/(.+)$/);
+    if (!m && (m = rel.match(/^sound\/(.+)$/))) m = [, "data/sound", undefined, m[1]]; // the sound folder itself
+    if (!m || !/^\d{5}(-p0)?\.ifs$|^\d{5}\/\d{5}\.1$|^\d{5}(-p0)?_ifs\//.test(m[3])) continue;
+    files.set(`${m[1]}/${m[3]}`, f);
+    if (m[2]) mods.add(m[2]);
+  }
+  return {name, files, mods: [...mods].sort()};
+}
+
+// Runs fn over items, n at a time.
+async function pool(items, n, fn) {
+  let next = 0;
+  await Promise.all(Array.from({length: Math.min(n, items.length)}, async () => {
+    while (next < items.length) await fn(items[next++]);
+  }));
+}
+
+// The start of an IFS up to the end of its manifest: what the tracker needs to find a file in it.
+async function ifsHead(file) {
+  const head = await file.slice(0, 36).arrayBuffer();
+  const v = new DataView(head);
+  if (head.byteLength < 20 || v.getUint32(0) !== 0x6CAD8F89 || v.getUint32(16) > 64 << 20) return head; // the tracker says what is wrong
+  return file.slice(0, v.getUint32(16)).arrayBuffer();
+}
+
+function base64(buf) {
+  const b = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// The notes of every chart of a .1, counted like NoteCounts in internal/sound: chart index -> notes.
+const CHART_SLOT = [3, 1, 0, 2, 4, 9, 7, 6, 8, 10];
+function noteCounts(buf) {
+  const v = new DataView(buf), len = buf.byteLength;
+  if (len >= 4 && v.getUint32(0) === 0x6CAD8F89) {
+    return {error: "譜面の代わりにダミーが置かれています (未収録曲)", error_en: "a dummy stands in for the chart (song not included)"};
+  }
+  if (len < 96) return {error: ".1 が短すぎます", error_en: "the .1 is too short"};
+  const counts = {};
+  for (let chart = 0; chart < CHART_SLOT.length; chart++) {
+    const off = v.getUint32(CHART_SLOT[chart] * 8, true), size = v.getUint32(CHART_SLOT[chart] * 8 + 4, true);
+    if (!off || !size) continue;
+    if (off < 96 || off > len) {
+      return {error: `譜面 ${chart} の位置 0x${off.toString(16)} がファイルの外です`, error_en: `chart ${chart} at 0x${off.toString(16)} lies outside the file`};
+    }
+    let n = 0;
+    for (let p = off, end = Math.min(len, off + size); p + 8 <= end; p += 8) {
+      if (v.getInt32(p, true) === 0x7FFFFFFF) break;
+      const cmd = v.getUint8(p + 4);
+      if (cmd === 0 || cmd === 1) n += v.getUint16(p + 6, true) ? 2 : 1; // a charge note: start and end are judged
+    }
+    counts[chart] = n;
+  }
+  return {counts};
+}
+
+// Counts the charts of a picked folder: the tracker finds each song's chart from the file list and
+// the IFS manifests (a few hundred bytes each), the charts are read and counted here, and only the
+// counts are sent.
+async function browserScan(game, mods, db, progress) {
+  const start = performance.now();
+  const layers = ["data/sound/", ...mods.map((m) => `data_mods/${m}/sound/`)];
+  const paths = [...game.files.keys()].filter((p) => layers.some((l) => p.startsWith(l)));
+  const heads = {};
+  let done = 0;
+  await pool(paths, 16, async (p) => {
+    heads[p] = p.endsWith(".ifs") ? base64(await ifsHead(game.files.get(p))) : "";
+    if (++done % 200 === 0) progress(t("フォルダを読んでいます… {0}/{1}", done, paths.length));
+  });
+  progress(t("譜面の場所を調べています…"));
+  const found = await post("/api/sound/locate", {files: heads, mods});
+  const songs = [];
+  done = 0;
+  await pool(found.songs, 8, async (s) => {
+    if (s.need) {
+      const f = game.files.get(s.need.path);
+      const part = s.need.size < 0 ? f : f.slice(s.need.offset, s.need.offset + s.need.size);
+      s = {id: s.id, source: s.source, ...noteCounts(await part.arrayBuffer())};
+    }
+    songs.push(s);
+    if (++done % 200 === 0) progress(t("譜面を数えています… {0}/{1}", done, found.songs.length));
+  });
+  const out = await post("/api/sound/import", {musicdb_id: db, root: game.name, mods: found.mods, songs});
+  return {...out, seconds: (performance.now() - start) / 1000};
+}
+
+// ---- 2dxtra.sqlite on the browser's PC (the tracker may be on another) ----
+
+// The chart list of a 2dxtra.sqlite, read here without sending the file - it is mostly the charts
+// themselves, hundreds of MB. A minimal reader of the SQLite file format walks the tables chart_set and
+// charts and keeps the columns the tracker needs, which sit at the start of each row. It does not read
+// 2dxtra.sqlite-wal: what the game wrote while it runs may be missing until it ends.
+// Returns {sets: {id: name}, charts: [[set id, music ID, chart, id, notes, radar x 6]]}.
+async function read2dxtra(file, progress) {
+  const head = new DataView(await file.slice(0, 100).arrayBuffer());
+  if (head.byteLength < 100 || new TextDecoder().decode(new Uint8Array(head.buffer, 0, 15)) !== "SQLite format 3") {
+    throw new Error(t("SQLite のファイルではありません"));
+  }
+  const pageSize = head.getUint16(16) === 1 ? 65536 : head.getUint16(16);
+  const usable = pageSize - head.getUint8(20);
+  const text = new TextDecoder();
+  const varint = (v, p) => { // [value, the offset after it]
+    let x = 0;
+    for (let i = 0; i < 8; i++) {
+      const b = v.getUint8(p + i);
+      x = x * 128 + (b & 0x7f);
+      if (!(b & 0x80)) return [x, p + i + 1];
+    }
+    return [x * 256 + v.getUint8(p + 8), p + 9];
+  };
+  // the columns of a record, as far as the cell's own page holds them (the big ones come last)
+  const record = (v, p, end) => {
+    let [size, q] = varint(v, p);
+    const types = [];
+    while (q < p + size) {
+      let type;
+      [type, q] = varint(v, q);
+      types.push(type);
+    }
+    const cols = [];
+    let at = p + size;
+    for (const type of types) {
+      const len = type >= 12 ? (type - 12) >> 1 : [0, 1, 2, 3, 4, 6, 8, 8, 0, 0][type];
+      if (at + len > end) break; // continues on an overflow page: not needed
+      if (type === 0 || type === 10 || type === 11) cols.push(null);
+      else if (type === 8 || type === 9) cols.push(type - 8);
+      else if (type <= 6) {
+        let x = v.getInt8(at);
+        for (let i = 1; i < len; i++) x = x * 256 + v.getUint8(at + i);
+        cols.push(x);
+      } else if (type === 7) cols.push(v.getFloat64(at));
+      else if (type & 1) cols.push(text.decode(new Uint8Array(v.buffer, v.byteOffset + at, len)));
+      else cols.push(null); // a blob
+      at += len;
+    }
+    return cols;
+  };
+  // every row of the table whose b-tree starts at page root
+  const rows = async (root, visit) => {
+    const pending = [root];
+    while (pending.length) {
+      const batch = pending.splice(0, 64);
+      const pages = await Promise.all(batch.map(async (n) =>
+        new DataView(await file.slice((n - 1) * pageSize, n * pageSize).arrayBuffer())));
+      pages.forEach((v, i) => {
+        const base = batch[i] === 1 ? 100 : 0; // page 1 starts with the file header
+        const type = v.getUint8(base), cells = v.getUint16(base + 3), ptrs = base + (type === 5 ? 12 : 8);
+        for (let c = 0; c < cells; c++) {
+          let p = v.getUint16(ptrs + c * 2);
+          if (type === 5) { // interior: the child page
+            pending.push(v.getUint32(p));
+            continue;
+          }
+          if (type !== 13) throw new Error(t("2dxtra のデータベースとして読めません"));
+          let size, rowid;
+          [size, p] = varint(v, p);
+          [rowid, p] = varint(v, p);
+          const max = usable - 35, min = Math.floor((usable - 12) * 32 / 255) - 23, k = min + (size - min) % (usable - 4);
+          visit(rowid, record(v, p, p + (size <= max ? size : k <= max ? k : min)));
+        }
+        if (type === 5) pending.push(v.getUint32(base + 8)); // the right-most child
+      });
+    }
+  };
+  const tables = {};
+  await rows(1, (_, [type, name, , root, sql]) => { if (type === "table") tables[name] = {root, sql}; });
+  if (!tables.chart_set || !tables.charts) throw new Error(t("2dxtra のデータベースとして読めません"));
+  const sets = {};
+  await rows(tables.chart_set.root, (id, [, name]) => { sets[id] = name; }); // id is the rowid
+  const col = Object.fromEntries([...tables.charts.sql.matchAll(/(\w+)\s+(?:INTEGER|TEXT|BLOB)/g)].map((m, i) => [m[1], i]));
+  const want = ["chart_set", "music_id", "difficulty", "hash", "notes",
+    "radar_notes", "radar_peak", "radar_scratch", "radar_soflan", "radar_charge", "radar_chord"];
+  if (want.some((w) => col[w] == null)) throw new Error(t("2dxtra のデータベースとして読めません"));
+  const charts = [];
+  await rows(tables.charts.root, (_, c) => {
+    charts.push(want.map((w) => c[col[w]] ?? null));
+    if (charts.length % 5000 === 0) progress?.(t("譜面の一覧を読んでいます… {0}", charts.length));
+  });
+  return {sets, charts};
+}
+
+// Buttons that delete one kind of note counts of a music database (the database and plays stay; the
+// music data is taken back per import, in the table).
+function clearButtons(d) {
+  const items = [
+    ["analysis", d.notes.analysis && t("譜面解析のノーツ数 ({0} 譜面)", d.notes.analysis)],
+    ["import", d.notes.import && t("JSON のノーツ数 ({0} 譜面)", d.notes.import)],
+    ["observed", d.notes.observed && t("プレイから推定したノーツ数 ({0} 譜面)", d.notes.observed)],
+  ].filter(([, label]) => label);
+  if (!items.length) return "";
+  return `<div class="row small" style="margin-top:8px"><span class="dim">${t("取り込んだ情報を削除:")}</span>
+    ${items.map(([what, label]) => `<button class="danger" data-clear="${what}" data-db="${d.id}" data-label="${esc(label)}">${esc(label)}</button>`).join("")}</div>`;
+}
+
+// One music data file the game loaded that was never imported: import it here (only that very file is
+// taken), or put its plays in a database as is, comparing what each database calls their songs.
+function unassignedFile(f) {
+  return `<div style="margin-top:12px">
+    <p><b>${esc(f.filename ?? "?")}</b> <span class="dim small">${f.size != null ? t("{0} バイト", f.size.toLocaleString()) + SEP : ""}${
+      mono(esc(f.sha256.slice(0, 16)))}…${SEP}${t("{0} プレイ・{1} 曲", f.plays, f.songs)}${SEP}${fmtDate(f.first_played, false)} – ${fmtDate(f.last_played, false)}</span></p>
+    <div class="row" data-pending="${f.sha256}">
+      <input type="file" accept=".bin">
+      <select><option value="">${t("取り込み先を選んでください")}</option>
+        ${f.dbs.map((d) => `<option value="${d.id}">${t("{0} に追加", esc(d.name))}</option>`).join("")}
+        <option value="new">${t("新しい曲DBとして")}</option></select>
+      <input type="text" placeholder="${t("新しい曲DBの名前 (省略可)")}" style="display:none">
+      <button class="primary">${t("取り込む")}</button></div>
+    ${f.dbs.length ? `<details class="small" style="margin-top:8px"><summary>${t("取り込まずに、今ある曲DB に入れる (プレイの曲名で見比べる)")}</summary>
+    <div class="table-wrap"><table><thead><tr><th>${t("日時")}</th><th>${t("譜面")}</th><th class="num">EX</th>
+      ${f.dbs.map((d) => `<th>${esc(d.name)} <span class="dim small">${t("{0}/{1} 曲あり", d.has, f.songs)}</span><br>
+        <button data-assign="${f.sha256}" data-db="${d.id}" data-name="${esc(d.name)}">${t("この曲DB にする")}</button></th>`).join("")}</tr></thead><tbody>
+    ${f.samples.map((p) => `<tr><td>${fmtDate(p.played_at)}</td>
+      <td>${chartTag(p.chart)}${setPill(p.chart_set)} <span class="dim">${p.level ?? ""}</span></td><td class="num">${p.ex_score ?? "-"}</td>
+      ${f.dbs.map((d) => `<td class="title">${p.titles[d.id] != null ? esc(p.titles[d.id]) : `<span class="dim">${t("#{0} (無い曲)", p.music_id)}</span>`}</td>`).join("")}</tr>`).join("")}
+    </tbody></table></div></details>` : ""}</div>`;
 }
 
 async function viewCategories(view) {
@@ -1188,6 +1603,16 @@ async function viewSettings(view) {
 
 $("#player").addEventListener("change", async (e) => { setPlayer(e.target.value); await loadDbs(true).catch((err) => toast(err.message)); render(); });
 $("#db").addEventListener("change", (e) => { state.db = e.target.value; localStorage.setItem("db", state.db); render(); });
+$("#set").addEventListener("change", (e) => {
+  setSet(e.target.value);
+  const [path] = location.hash.split("?");
+  if (path.startsWith("#/chart/")) location.hash = chartHref(...path.slice(8).split("/"), state.set); // the same chart in that set
+  else render();
+});
+$("#menu-btn").addEventListener("click", () => {
+  const open = $("#top").classList.toggle("open");
+  $("#menu-btn").setAttribute("aria-expanded", open);
+});
 // fixed text of index.html, and the language switch (the page reloads in the other language)
 for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.textContent.trim());
 for (const el of document.querySelectorAll("[data-i18n-title]")) el.title = t(el.title);

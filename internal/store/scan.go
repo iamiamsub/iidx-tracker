@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 
 	"iidx-tracker/internal/i18n"
@@ -73,22 +74,158 @@ func countErrors(songs []sound.Song) int {
 	return n
 }
 
-// MachineBoot records what tracker_link.dll reported in a cabinet's services.get: the music data
-// file the game loads. It returns the music database holding that file, or nil when the file has
-// not been imported yet (importing it later ties the cabinet to it, see ImportMusicDB).
-func (s *Store) MachineBoot(pcbid, sha, filename string, size int64, altfix, game, remote string) (any, error) {
+// MachineUnreported notes a login without a report from tracker_link.dll (the game runs without it
+// now): what it reported before no longer applies until it reports again.
+func (s *Store) MachineUnreported(pcbid string) error {
+	_, err := s.Exec("UPDATE machines SET unreported_at = ? WHERE pcbid = ?", Now(), pcbid)
+	return err
+}
+
+// MachineBoot records what tracker_link.dll reported at a cabinet's login: the music data file the
+// game loaded and whether 2dxtra is loaded. It returns the music database holding that file - the
+// one it was imported into, or the one the player put it in - or nil when the file is new (the UI
+// then asks which one it is, see Unassigned).
+func (s *Store) MachineBoot(pcbid, sha, filename string, size int64, dxtra any, dll, game, remote string) (any, error) {
 	if pcbid == "" || len(sha) != 64 {
 		return nil, i18n.New("pcbid と sha256 が必要です", "pcbid and sha256 are required")
 	}
-	var db any
-	if r, err := s.Row("SELECT musicdb_id FROM musicdb_imports WHERE sha256 = ? ORDER BY id DESC LIMIT 1", sha); err != nil {
+	r, err := s.Row("SELECT COALESCE((SELECT musicdb_id FROM musicdb_imports WHERE sha256 = ? ORDER BY id DESC LIMIT 1), "+
+		"(SELECT musicdb_id FROM music_files WHERE sha256 = ?)) AS id", sha, sha)
+	if err != nil {
 		return nil, err
-	} else if r != nil {
-		db = r["musicdb_id"]
 	}
-	_, err := s.Exec("INSERT OR REPLACE INTO machines (pcbid, musicdb_id, sha256, filename, size, altfix, game, remote, booted_at) "+
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", pcbid, db, sha, filename, size, altfix, game, remote, Now())
+	db := r["id"]
+	err = s.tx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec("INSERT INTO music_files (sha256, filename, size, musicdb_id) VALUES (?, ?, ?, ?) "+
+			"ON CONFLICT (sha256) DO UPDATE SET filename = excluded.filename, size = excluded.size, "+
+			"musicdb_id = excluded.musicdb_id", sha, filename, size, db); err != nil {
+			return err
+		}
+		_, err := tx.Exec("INSERT OR REPLACE INTO machines (pcbid, musicdb_id, sha256, filename, size, altfix, game, remote, "+
+			"booted_at, dxtra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", pcbid, db, sha, filename, size, dll, game, remote, Now(), dxtra)
+		return err
+	})
 	return db, err
+}
+
+// Cabinet is what a cabinet's calls are recorded under.
+type Cabinet struct {
+	DB    any   // the music database, nil when not known
+	Omni  int64 // 1 = omnimix
+	Hash  any   // the music data file tracker_link.dll reported, nil without a report
+	Dxtra any   // 1 when 2dxtra is loaded, nil when not reported
+}
+
+// CabinetFor decides where a cabinet's call belongs. With a report from tracker_link.dll (every login
+// carries one), the music data file the game loaded decides: the database holding it (and
+// with it omnimix or not), or none until the player says which one it is (the file name then tells
+// omnimix apart, for the relay). Without a report the model's revision does ('S' = omnimix, set by
+// altfix), and the newest database of that kind and game version.
+func (s *Store) CabinetFor(pcbid, model string, version any) Cabinet {
+	cab := Cabinet{}
+	if parts := strings.Split(model, ":"); len(parts) > 3 && parts[3] == "S" {
+		cab.Omni = 1
+	}
+	r, err := s.Row("SELECT m.sha256, m.filename, m.dxtra, d.id, d.kind FROM machines m LEFT JOIN musicdbs d ON d.id = m.musicdb_id "+
+		"WHERE m.pcbid = ? AND m.sha256 IS NOT NULL AND m.booted_at >= COALESCE(m.unreported_at, 0)", pcbid)
+	if err != nil || r == nil {
+		cab.DB = s.DBFor(cab.Omni, version)
+		return cab
+	}
+	cab.Hash, cab.Dxtra = r["sha256"], r["dxtra"]
+	if r["id"] != nil {
+		cab.DB = r["id"]
+		cab.Omni = 0
+		if r["kind"] == "omni" {
+			cab.Omni = 1
+		}
+	} else if strings.Contains(strings.ToLower(str(r["filename"])), "omni") {
+		cab.Omni = 1
+	}
+	return cab
+}
+
+// AssignMusicFile puts a music data file in a music database: the cabinets that reported it, and
+// the logins and plays recorded on it, belong to that database from now on (omnimix or not as the
+// database is).
+func (s *Store) AssignMusicFile(sha string, db any) error {
+	r, err := s.Row("SELECT kind FROM musicdbs WHERE id = ?", db)
+	if err != nil {
+		return err
+	}
+	if r == nil {
+		return i18n.New("指定された曲DBが存在しません", "No such music database")
+	}
+	omni := 0
+	if r["kind"] == "omni" {
+		omni = 1
+	}
+	err = s.tx(func(tx *sql.Tx) error {
+		for _, q := range []struct {
+			sql  string
+			args []any
+		}{
+			{"INSERT INTO music_files (sha256, musicdb_id) VALUES (?, ?) ON CONFLICT (sha256) DO UPDATE SET musicdb_id = excluded.musicdb_id", []any{sha, db}},
+			{"UPDATE machines SET musicdb_id = ? WHERE sha256 = ?", []any{db, sha}},
+			{"UPDATE plays SET musicdb_id = ?, omni = ? WHERE music_hash = ?", []any{db, omni, sha}},
+			{"UPDATE sessions SET musicdb_id = ?, omni = ? WHERE music_hash = ?", []any{db, omni, sha}},
+		} {
+			if _, err := tx.Exec(q.sql, q.args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return assignUnknownDBs(s.db) // server bests take the database of the latest login
+}
+
+// Unassigned lists the music data files tracker_link.dll reported that no music database holds yet,
+// with their latest plays and, per database, how many of the songs played on the file it has and
+// what it calls them - so that the player can tell which database the file is.
+func (s *Store) Unassigned() ([]Row, error) {
+	files, err := s.Rows(`SELECT p.music_hash AS sha256, f.filename, f.size, MAX(p.game_version) AS game_version,
+		COUNT(*) AS plays, COUNT(DISTINCT p.music_id) AS songs, MIN(p.played_at) AS first_played, MAX(p.played_at) AS last_played
+		FROM plays p LEFT JOIN music_files f ON f.sha256 = p.music_hash
+		WHERE p.musicdb_id IS NULL AND p.music_hash IS NOT NULL GROUP BY p.music_hash ORDER BY last_played DESC`)
+	if err != nil || len(files) == 0 {
+		return files, err
+	}
+	dbs, err := s.Rows("SELECT id, name, kind, game_version FROM musicdbs ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range files {
+		samples, err := s.Rows("SELECT id, played_at, iidx_id, music_id, chart, level, clear, ex_score, miss_count, chart_set, dxtra "+
+			"FROM plays WHERE music_hash = ? AND musicdb_id IS NULL ORDER BY played_at DESC LIMIT 20", f["sha256"])
+		if err != nil {
+			return nil, err
+		}
+		fits := []Row{}
+		for _, d := range dbs {
+			songs, err := s.Rows("SELECT music_id, title FROM songs WHERE musicdb_id = ? AND removed = 0 AND music_id IN "+
+				"(SELECT DISTINCT music_id FROM plays WHERE music_hash = ? AND musicdb_id IS NULL)", d["id"], f["sha256"])
+			if err != nil {
+				return nil, err
+			}
+			titles := map[any]any{}
+			for _, sg := range songs {
+				titles[sg["music_id"]] = sg["title"]
+			}
+			for _, p := range samples {
+				if p["titles"] == nil {
+					p["titles"] = map[string]any{}
+				}
+				p["titles"].(map[string]any)[fmt.Sprint(d["id"])] = titles[p["music_id"]]
+			}
+			fits = append(fits, Row{"id": d["id"], "name": d["name"], "kind": d["kind"],
+				"game_version": d["game_version"], "has": len(songs)})
+		}
+		f["dbs"], f["samples"] = fits, samples
+	}
+	return files, nil
 }
 
 // DBFor returns the music database that fits a play: omnimix plays use the omni lineage of the

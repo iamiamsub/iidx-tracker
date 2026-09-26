@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.31)
 
 # tracker_link.dll: a hook DLL for the game that adds what the tracker needs to the game's own
 # requests (see src/tracker_link.cc). Built with MSVC; see build.ps1.
-project(tracker_link VERSION 1.0.0 LANGUAGES CXX RC)
+project(tracker_link VERSION 1.1.0 LANGUAGES CXX RC)
 
 find_package(Zydis CONFIG REQUIRED)
 find_package(safetyhook CONFIG REQUIRED)

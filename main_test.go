@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -262,7 +263,7 @@ func TestEndToEnd(t *testing.T) {
 		sb[1]["clear"] != int64(5) || sb[1]["ex_score"] != int64(3000) || sb[1]["miss_count"] != int64(4) {
 		t.Fatal(sb)
 	}
-	rows, _ := s.ChartRows(card, "", 0, "", "", nil)
+	rows, _ := s.ChartRows(card, "", 0, "", "", nil, "")
 	byChart := map[[2]int64]map[string]any{}
 	for _, r := range rows {
 		byChart[[2]int64{r["music_id"].(int64), r["chart"].(int64)}] = r
@@ -308,11 +309,11 @@ func TestEndToEnd(t *testing.T) {
 	if shown[0]["djpoint"] != int64(3438*150) {
 		t.Fatal(shown[0]["djpoint"])
 	}
-	sp, _ := s.ChartRows(card, "SP", 0, "", "", nil)
+	sp, _ := s.ChartRows(card, "SP", 0, "", "", nil, "")
 	if total := store.DjPointTotal(sp); !reflect.DeepEqual(total, map[string]any{"total": int64(3438 * 150 / 10000), "songs": 1, "unknown": 1}) {
 		t.Fatal(total)
 	}
-	chart, _ := s.Chart(card, nil, 18032, 3)
+	chart, _ := s.Chart(card, nil, 18032, 3, "")
 	sec := chart["sections"].(map[string]any)
 	maxLost := 0.0
 	for _, v := range sec["lost"].([]float64) {
@@ -396,6 +397,160 @@ func mdb33(ids ...int) []byte {
 	return head
 }
 
+// Each kind of what was imported into a music database can be deleted on its own.
+func TestMusicDBClear(t *testing.T) {
+	tmp := t.TempDir()
+	config := defaultConfig()
+	config["db_path"] = filepath.Join(tmp, "t.db")
+	static, _ := fs.Sub(embedded, "static")
+	app, err := newApp(filepath.Join(tmp, "config.json"), config, tmp, static)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.store.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+	res, err := app.store.ImportMusicDB("music_data.bin", mdb33(18032, 33001), "new", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := res["musicdb_id"]
+	for i, source := range []string{"analysis", "import", "observed"} {
+		app.store.Exec("INSERT INTO chart_notes_db VALUES (?, 18032, ?, 1000, ?, 0)", db, i, source)
+	}
+	clear := func(what string) int {
+		resp, err := http.Post(web.URL+"/api/musicdb/update", "application/json",
+			strings.NewReader(fmt.Sprintf(`{"id": %d, "clear": "%s"}`, db, what)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	count := func(q string) any { r, _ := app.store.Row("SELECT COUNT(*) AS n FROM "+q, db); return r["n"] }
+	if clear("analysis") != 200 || count("chart_notes_db WHERE musicdb_id = ?") != int64(2) {
+		t.Fatal("analysis")
+	}
+	if clear("everything") != 400 {
+		t.Fatal("unknown kind accepted")
+	}
+
+	// one import taken back: the songs come from the imports that remain
+	if res, err := app.store.ImportMusicDB("music_data_v2.bin", mdb33(18032), fmt.Sprint(db), ""); err != nil || res["removed"] != 1 {
+		t.Fatal(res, err)
+	}
+	undo := func() int {
+		r, _ := app.store.Row("SELECT MAX(id) AS id FROM musicdb_imports WHERE musicdb_id = ?", db)
+		resp, err := http.Post(web.URL+"/api/musicdb/update", "application/json",
+			strings.NewReader(fmt.Sprintf(`{"id": %d, "delete_import": %d}`, db, r["id"])))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if undo() != 200 || count("songs WHERE musicdb_id = ? AND removed = 0") != int64(2) || count("musicdb_imports WHERE musicdb_id = ?") != int64(1) {
+		t.Fatal("the second import not taken back")
+	}
+	if undo() != 200 || count("songs WHERE musicdb_id = ?") != int64(0) || count("musicdbs WHERE id = ?") != int64(1) ||
+		count("chart_notes_db WHERE musicdb_id = ?") != int64(2) {
+		t.Fatal("the last import not taken back") // the database and the note counts stay
+	}
+}
+
+// The song page's "pick in the game": tracker_link.dll's poll from the music select takes the song.
+func TestPickSong(t *testing.T) {
+	up := fakeServer(t)
+	defer up.Close()
+	tmp := t.TempDir()
+	config := defaultConfig()
+	config["upstream"], config["db_path"] = up.URL, filepath.Join(tmp, "t.db")
+	static, _ := fs.Sub(embedded, "static")
+	app, err := newApp(filepath.Join(tmp, "config.json"), config, tmp, static)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.store.Close()
+	proxy := httptest.NewServer(app)
+	defer proxy.Close()
+	upstreamSaw.Lock()
+	upstreamSaw.xml = nil
+	upstreamSaw.Unlock()
+	pick := func() int {
+		resp, err := http.Post(proxy.URL+"/api/pick", "application/json", strings.NewReader(`{"music_id": 33051, "chart": 3}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	poll := func() *eamuse.Node {
+		status, h, body := post(t, proxy.URL, "/", `<call model="`+model+`" srcid="PCB1"><tracker method="poll"/></call>`)
+		doc, _, err := eamuse.Decode(body, h.Get("X-Eamuse-Info"), h.Get("X-Compress"))
+		if status != 200 || err != nil || doc.Find("tracker") == nil {
+			t.Fatal(status, err, string(body))
+		}
+		return doc.Find("tracker")
+	}
+	if pick() != 400 {
+		t.Fatal("picked with no game on the music select")
+	}
+	if n := poll(); n.Get("status") != "0" || n.Get("music_id") != "" {
+		t.Fatal(string(n.XML()))
+	}
+	if pick() != 200 {
+		t.Fatal("pick refused")
+	}
+	if n := poll(); n.Get("music_id") != "33051" || n.Get("chart") != "3" {
+		t.Fatal(string(n.XML()))
+	}
+	if n := poll(); n.Get("music_id") != "" {
+		t.Fatal("picked twice")
+	}
+	// the polls are neither relayed nor counted
+	upstreamSaw.Lock()
+	defer upstreamSaw.Unlock()
+	if len(upstreamSaw.xml) != 0 || stat(app, "requests") != 0 {
+		t.Fatal(upstreamSaw.xml, stat(app, "requests"))
+	}
+}
+
+// A browser reads the chart list out of 2dxtra.sqlite on its own PC and sends only that.
+func TestChartSetsUpload(t *testing.T) {
+	tmp := t.TempDir()
+	config := defaultConfig()
+	config["db_path"] = filepath.Join(tmp, "t.db")
+	static, _ := fs.Sub(embedded, "static")
+	app, err := newApp(filepath.Join(tmp, "config.json"), config, tmp, static)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.store.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+	send := func(body string) int {
+		resp, err := http.Post(web.URL+"/api/chartsets/upload", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if send(`{"sets": {"0": "Kiraku"}, "charts": [[1, 1000, 3, "h", 99, 1, 2, 3, 4, 5, 6]]}`) != 400 {
+		t.Fatal("a chart of an unknown set accepted")
+	}
+	// 2dxtra leaves some chart ids empty; the import from a path keeps them, so does this one
+	if send(`{"sets": {"0": "Kiraku", "1": "Kichiku"}, "charts": [[0, 1000, 3, "h1", 99, 1201, 4000, 530, 0, 0, 223],
+		[1, 1000, 3, "", 120, 20000, null, 0, 0, 0, 20000]]}`) != 200 {
+		t.Fatal("upload refused")
+	}
+	rows, _ := app.store.Rows("SELECT chart_set, set_order, hash, notes, radar FROM custom_charts ORDER BY set_order")
+	if len(rows) != 2 || rows[0]["radar"] != "1201 4000 530 0 0 223" || rows[1]["chart_set"] != "Kichiku" ||
+		rows[1]["set_order"] != int64(1) || rows[1]["radar"] != "20000 0 0 0 0 20000" {
+		t.Fatal(rows)
+	}
+}
+
 // altfix reports the music data file the game loaded; the cabinet's plays then belong to it.
 func TestTrackerLink(t *testing.T) {
 	up := fakeServer(t)
@@ -415,21 +570,28 @@ func TestTrackerLink(t *testing.T) {
 	upstreamSaw.xml = nil
 	upstreamSaw.Unlock()
 
-	// services.get carries the music data file the game loads (the PCBID is the call's srcid)
+	// the tracker's answer to services.get lists "iidx_tracker": tracker_link.dll adds nothing without it
+	status, h, body := post(t, proxy.URL, "/", `<call model="`+model+`" srcid="00010203040506070809"><services method="get"/></call>`)
+	if urls := serviceURLs(t, h, body); status != 200 || !strings.HasPrefix(urls["iidx_tracker"], "http://127.0.0.1:") {
+		t.Fatal(status, urls)
+	}
+
+	// pc.get carries the music data file the game loaded and whether 2dxtra is loaded (the PCBID is
+	// the call's srcid). With 2dxtra the revision is 'E', so the file is what tells omnimix.
+	dx := func(xml string) string { return strings.ReplaceAll(xml, model, "LDJ:J:D:E:2026081900") }
 	file := mdb33(18032, 33999)
-	services := fmt.Sprintf(`<call model="%s" srcid="00010203040506070809"><services method="get">`+
-		`<tracker_link ver="t" name="music_omni.bin" size="%d" sha256="%x"/></services></call>`,
-		model, len(file), sha256.Sum256(file))
-	if status, _, _ := post(t, proxy.URL, "/", services); status != 200 {
-		t.Fatal(status)
+	sha := fmt.Sprintf("%x", sha256.Sum256(file))
+	pcget := strings.Replace(dx(fixture(t, "pcget_req.xml")), `"/>`, fmt.Sprintf(`"><tracker_link ver="t" `+
+		`name="music_omni.bin" size="%d" sha256="%s" dxtra="1"/></IIDX33pc>`, len(file), sha), 1)
+	setUpstream(app, "http://203.0.113.9:8083")
+	if status, _, _ := post(t, proxy.URL, "/", pcget); status != 403 {
+		t.Fatal("omnimix relayed to a public server", status)
 	}
-	machine, _ := app.store.Row("SELECT musicdb_id, filename, altfix FROM machines WHERE pcbid = '00010203040506070809'")
-	if machine == nil || machine["musicdb_id"] != nil || machine["filename"] != "music_omni.bin" || machine["altfix"] != "tracker_link t" {
+	setUpstream(app, up.URL)
+	machine, _ := app.store.Row("SELECT musicdb_id, filename, altfix, dxtra FROM machines WHERE pcbid = '00010203040506070809'")
+	if machine == nil || machine["musicdb_id"] != nil || machine["filename"] != "music_omni.bin" ||
+		machine["altfix"] != "tracker_link t" || machine["dxtra"] != int64(1) {
 		t.Fatal(machine) // known cabinet, file not imported yet
-	}
-	res, err := app.store.ImportMusicDB("music_omni.bin", file, "auto", "")
-	if err != nil {
-		t.Fatal(err)
 	}
 
 	// music.reg carries the play's judgments by timing and by key
@@ -438,11 +600,11 @@ func TestTrackerLink(t *testing.T) {
 	binary.LittleEndian.PutUint32(lane, 245)                              // 1P side, key 1, PGREAT
 	binary.LittleEndian.PutUint32(measure, math.Float32bits(-1))          // no notes
 	binary.LittleEndian.PutUint32(measure[4:], math.Float32bits(0.96875)) // 96.875%
-	reg := strings.Replace(fixture(t, "musicreg_req.xml"), "</IIDX33music>", fmt.Sprintf(`<tracker_link ver="t">`+
+	reg := strings.Replace(dx(fixture(t, "musicreg_req.xml")), "</IIDX33music>", fmt.Sprintf(`<tracker_link ver="t">`+
 		`<judge __type="bin" __size="88">%x</judge><lane __type="bin" __size="384">%x</lane>`+
 		`<measure __type="bin" __size="8">%x</measure></tracker_link></IIDX33music>`, judge, lane, measure), 1)
-	for _, xml := range []string{fixture(t, "pcget_req.xml"), reg} {
-		if status, _, _ := post(t, proxy.URL, "/?model="+model, xml); status != 200 {
+	for _, xml := range []string{pcget, reg} {
+		if status, _, _ := post(t, proxy.URL, "/", xml); status != 200 {
 			t.Fatal(status)
 		}
 	}
@@ -450,14 +612,62 @@ func TestTrackerLink(t *testing.T) {
 	for time.Now().Before(deadline) && stat(app, "recorded") != 2 {
 		time.Sleep(50 * time.Millisecond)
 	}
-	play, _ := app.store.Row("SELECT musicdb_id, pcbid, judge_timing, judge_lanes, judge_measures FROM plays")
-	if play == nil || play["musicdb_id"] != res["musicdb_id"] || play["pcbid"] != "00010203040506070809" ||
-		!strings.HasPrefix(fmt.Sprint(play["judge_timing"]), "0 0 0 0 1719 0") ||
+	play, _ := app.store.Row("SELECT musicdb_id, omni, music_hash, dxtra, pcbid, judge_timing, judge_lanes, judge_measures FROM plays")
+	if play == nil || play["musicdb_id"] != nil || play["omni"] != int64(1) || play["music_hash"] != sha || play["dxtra"] != int64(1) ||
+		play["pcbid"] != "00010203040506070809" || !strings.HasPrefix(fmt.Sprint(play["judge_timing"]), "0 0 0 0 1719 0") ||
 		!strings.HasPrefix(fmt.Sprint(play["judge_lanes"]), "245 0 0") || play["judge_measures"] != "-1.0000 0.9688" {
-		t.Fatal(play, res)
+		t.Fatal(play)
 	}
 
-	// the server upstream got both requests, without the element
+	// the file is in no music database: its plays wait for the player to say which one it is, even
+	// when a database is imported meanwhile
+	vanilla, err := app.store.ImportMusicDB("music_data.bin", mdb33(18032), "new", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := app.store.Unassigned()
+	if err != nil || len(files) != 1 || files[0]["sha256"] != sha || files[0]["plays"] != int64(1) ||
+		len(files[0]["samples"].([]store.Row)) != 1 || files[0]["dbs"].([]store.Row)[0]["has"] != 1 {
+		t.Fatal(files, err)
+	}
+	resp, err := http.Post(proxy.URL+"/api/musicdata/assign", "application/json",
+		strings.NewReader(fmt.Sprintf(`{"sha256": "%s", "musicdb_id": %d}`, sha, vanilla["musicdb_id"])))
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatal(err, resp.StatusCode)
+	}
+	resp.Body.Close()
+	play, _ = app.store.Row("SELECT musicdb_id, omni FROM plays")
+	if play["musicdb_id"] != vanilla["musicdb_id"] || play["omni"] != int64(0) {
+		t.Fatal(play) // the database decides omnimix now
+	}
+	if files, _ := app.store.Unassigned(); len(files) != 0 {
+		t.Fatal(files)
+	}
+	// importing the file itself puts it (and its plays) in the database it was imported into; another
+	// version under the same name is refused
+	upload := func(data []byte) (int, map[string]any) {
+		resp, err := http.Post(proxy.URL+"/api/musicdb/upload?filename=music_omni.bin&target=new&expect="+sha,
+			"application/octet-stream", bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out := map[string]any{}
+		json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	if status, _ := upload(mdb33(18032, 33998)); status != 400 {
+		t.Fatal("another file accepted", status)
+	}
+	status, omni := upload(file)
+	if status != 200 {
+		t.Fatal(status, omni)
+	}
+	if play, _ = app.store.Row("SELECT musicdb_id, omni FROM plays"); play["musicdb_id"] != int64(omni["musicdb_id"].(float64)) || play["omni"] != int64(1) {
+		t.Fatal(play, omni)
+	}
+
+	// the server upstream got the requests without the element
 	upstreamSaw.Lock()
 	defer upstreamSaw.Unlock()
 	relayed := strings.Join(upstreamSaw.xml, "\n")

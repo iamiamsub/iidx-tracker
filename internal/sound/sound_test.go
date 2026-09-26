@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/binary"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -179,6 +180,41 @@ func TestScanLayers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v\nwant %v", got, want)
+	}
+
+	// the same folder on a browser's PC: the scan locates the charts from the file list and the IFS
+	// manifests, and counting what it located gives the same result
+	files := map[string][]byte{}
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		b, _ := os.ReadFile(p)
+		head := []byte{}
+		if strings.HasSuffix(p, ".ifs") {
+			head = b[:min(len(b), int(binary.BigEndian.Uint32(b[16:])))] // up to the end of the manifest
+		}
+		files[filepath.ToSlash(rel)] = head
+		return nil
+	})
+	located := map[int64]int64{}
+	for _, s := range Scan(Listing(files, nil)) {
+		if s.Need == nil {
+			t.Fatalf("%d not located: %s", s.ID, s.Err)
+		}
+		b, _ := os.ReadFile(filepath.Join(root, filepath.FromSlash(s.Need.Path)))
+		if s.Need.Size >= 0 {
+			b = b[s.Need.Offset : s.Need.Offset+s.Need.Size]
+		}
+		counts, err := NoteCounts(b)
+		if err != nil {
+			t.Fatal(s.ID, err)
+		}
+		located[s.ID] = counts[3]
+	}
+	if !reflect.DeepEqual(located, want) {
+		t.Fatalf("located %v\nwant %v", located, want)
 	}
 
 	// data only (omnimix copied straight into data): mods ignored

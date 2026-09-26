@@ -190,7 +190,7 @@ func TestSealedMusicData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	res, err := st.ImportMusicDB("renamed.bin", sealed, "auto", "")
+	res, err := st.ImportMusicDB("renamed.bin", sealed, "new", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,20 +304,28 @@ func TestMusicDB(t *testing.T) {
 	if md, _ := ParseMusicData(vanilla); md.Sealed || md.Songs[0].Text["title"] != "Stay my side" || md.Songs[0].Levels[3] != 12 {
 		t.Fatalf("%+v", md)
 	}
-	a, _ := st.ImportMusicDB("music_data.bin", vanilla, "auto", "")
-	b, _ := st.ImportMusicDB("music_omni.bin", omni, "auto", "")
+	a, _ := st.ImportMusicDB("music_data.bin", vanilla, "new", "")
+	b, _ := st.ImportMusicDB("music_omni.bin", omni, "new", "")
 	if a["musicdb_id"] == b["musicdb_id"] {
 		t.Fatal("omni and vanilla share a lineage")
 	}
-	// a newer omni build lands in the same lineage instead of a new database
-	c, _ := st.ImportMusicDB("music_omni_v13.bin", omni2, "auto", "")
+	if r, _ := st.Row("SELECT kind FROM musicdbs WHERE id = ?", b["musicdb_id"]); r["kind"] != "omni" {
+		t.Fatal(r) // a new database is omni when the file name says so
+	}
+	// a newer omni build added to its lineage
+	c, _ := st.ImportMusicDB("music_omni_v13.bin", omni2, str(b["musicdb_id"]), "")
 	if c["musicdb_id"] != b["musicdb_id"] || c["added"] != 1 || c["duplicate"] != false {
 		t.Fatal(c)
 	}
-	if again, _ := st.ImportMusicDB("music_omni_v13.bin", omni2, "auto", ""); again["duplicate"] != true {
+	if again, _ := st.ImportMusicDB("music_omni_v13.bin", omni2, str(b["musicdb_id"]), ""); again["duplicate"] != true {
 		t.Fatal(again)
 	}
-	// manual choice overrides detection
+	// the target is never guessed
+	for _, target := range []string{"", "auto", "999"} {
+		if _, err := st.ImportMusicDB("music_omni_v14.bin", omni2, target, ""); err == nil {
+			t.Fatalf("imported with target %q", target)
+		}
+	}
 	d, _ := st.ImportMusicDB("renamed.bin", vanilla, "new", "手動")
 	if d["musicdb_id"] == a["musicdb_id"] || d["musicdb_id"] == b["musicdb_id"] {
 		t.Fatal(d)
@@ -376,28 +384,85 @@ func TestMusicDB(t *testing.T) {
 		t.Fatal(m1[18032], m2[18032])
 	}
 
-	// tracker_link reports the file the game loaded; the cabinet's traffic then belongs to its database
+	// tracker_link reports the file the game loaded at login; the cabinet's traffic then belongs to
+	// its database, omnimix or not as the database is (with 2dxtra the revision is 'E', not 'S')
+	const dxModel = "LDJ:J:D:E:2026081900"
 	shaOf := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
-	if db, err := st.MachineBoot("PCB1", shaOf(omni2), "music_omni.bin", int64(len(omni2)), "v", "g", "127.0.0.1"); err != nil || db != omniDB {
+	if db, err := st.MachineBoot("PCB1", shaOf(omni2), "music_omni.bin", int64(len(omni2)), 1, "v", "g", "127.0.0.1"); err != nil || db != omniDB {
 		t.Fatal(db, err)
 	}
-	if db := st.dbForCall("PCB1", 1, int64(33)); db != omniDB {
-		t.Fatal(db)
+	if cab := st.CabinetFor("PCB1", dxModel, int64(33)); cab.DB != omniDB || cab.Omni != 1 || cab.Hash != shaOf(omni2) || cab.Dxtra != int64(1) {
+		t.Fatal(cab)
 	}
-	if db := st.dbForCall("PCB1", 0, int64(33)); db == omniDB { // restarted as the regular game
-		t.Fatal("report used for a regular play")
+	// a later login without a report: the game runs without tracker_link.dll now
+	now := Now
+	defer func() { Now = now }()
+	Now = func() int64 { return now() + 60 }
+	if err := st.MachineUnreported("PCB1"); err != nil {
+		t.Fatal(err)
+	}
+	if cab := st.CabinetFor("PCB1", dxModel, int64(33)); cab.DB == omniDB || cab.Omni != 0 || cab.Hash != nil {
+		t.Fatal("report used after a login without one", cab)
 	}
 	custom := makeMDB([][4]any{stay, {33999, 80, "custom omni song", []int{0, 1, 2, 3, 0, 0, 1, 2, 3, 0}}})
-	if db, err := st.MachineBoot("PCB2", shaOf(custom), "music_omni.bin", int64(len(custom)), "v", "g", "127.0.0.1"); err != nil || db != nil {
+	if db, err := st.MachineBoot("PCB2", shaOf(custom), "music_omni.bin", int64(len(custom)), nil, "v", "g", "127.0.0.1"); err != nil || db != nil {
 		t.Fatal(db, err) // not imported yet
 	}
-	if db := st.dbForCall("PCB2", 1, int64(33)); db != omniDB {
-		t.Fatal(db) // falls back to the newest omni database meanwhile
+	if cab := st.CabinetFor("PCB2", dxModel, int64(33)); cab.DB != nil || cab.Omni != 1 || cab.Hash != shaOf(custom) {
+		t.Fatal(cab) // no database until the player says which one (the file name tells omnimix)
 	}
 	// importing the reported file ties the cabinet to it
 	res, err = st.ImportMusicDB("music_omni.bin", custom, "new", "custom omni")
-	if err != nil || st.dbForCall("PCB2", 1, int64(33)) != res["musicdb_id"] {
+	if err != nil || st.CabinetFor("PCB2", dxModel, int64(33)).DB != res["musicdb_id"] {
 		t.Fatal(res, err)
+	}
+}
+
+// A song of the regular game counts for both the omnimix and the regular database, whichever it was
+// played on; a song or chart only omnimix has stays with omnimix.
+func TestSharedSongs(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	stay := [4]any{18032, 18, "Stay my side", []int{0, 5, 9, 12, 0, 0, 5, 9, 11, 0}}
+	news := [4]any{33001, 33, "new song", []int{0, 3, 7, 10, 0, 0, 3, 7, 10, 0}}
+	old := [4]any{1000, 0, "5.1.1.", []int{0, 2, 6, 10, 0, 0, 1, 7, 10, 0}}
+	stayL := [4]any{18032, 18, "Stay my side", []int{0, 5, 9, 12, 12, 0, 5, 9, 11, 0}} // omnimix adds a LEGGENDARIA
+	va, _ := st.ImportMusicDB("music_data.bin", makeMDB([][4]any{stay, news}), "new", "")
+	om, _ := st.ImportMusicDB("music_omni.bin", makeMDB([][4]any{stayL, news, old}), "new", "")
+	for _, p := range []struct {
+		db           any
+		music, chart int64
+		ex           int
+	}{
+		{om["musicdb_id"], 18032, 3, 1500}, {va["musicdb_id"], 18032, 3, 1400}, {va["musicdb_id"], 33001, 3, 1000},
+		{om["musicdb_id"], 1000, 3, 900}, {om["musicdb_id"], 18032, 4, 1600},
+	} {
+		if _, err := st.Exec("INSERT INTO plays (card_id, music_id, chart, ex_score, musicdb_id, game_version, played_at) "+
+			"VALUES ('C1', ?, ?, ?, ?, 33, 1)", p.music, p.chart, p.ex, p.db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		db   any
+		want map[chartKey][2]int64 // best EX, plays
+	}{
+		{va["musicdb_id"], map[chartKey][2]int64{{18032, 3}: {1500, 2}, {33001, 3}: {1000, 1}}},
+		{om["musicdb_id"], map[chartKey][2]int64{{18032, 3}: {1500, 2}, {33001, 3}: {1000, 1}, {1000, 3}: {900, 1}, {18032, 4}: {1600, 1}}},
+	} {
+		bests, err := st.bests("C1", c.db, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[chartKey][2]int64{}
+		for k, b := range bests {
+			got[k] = [2]int64{*b.ex, b.plays}
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("db %v: got %v, want %v", c.db, got, c.want)
+		}
 	}
 }
 

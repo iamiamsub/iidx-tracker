@@ -6,6 +6,10 @@
 // "super"); when the base no longer has the fingerprint the patch expects, the game ignores the
 // patch ("broken super: missmatch fingerprint").
 //
+// The game folder is on this PC (Layers), or on the PC of a browser (Listing): the browser sends the
+// file list and the IFS manifests, the scan tells it where each chart is (Song.Need), and the
+// browser reads and counts the charts itself - only the counts come back.
+//
 // LayeredFS: every folder in data_mods is a mod laid over data. Mods are searched alphabetically
 // and the first one that has a file wins, file by file. A file inside an IFS can be replaced
 // with <name>_ifs/<file>, but an IFS cannot be created out of nothing.
@@ -20,14 +24,18 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"testing/fstest"
 
 	"iidx-tracker/internal/i18n"
 
@@ -85,6 +93,8 @@ type ifsEntry struct {
 
 // IFS is an opened archive: its manifest and where its data starts.
 type IFS struct {
+	fsys      fs.FS
+	deferred  bool // its files are located, not read (see NeedRead)
 	path      string
 	md5       []byte // fingerprint a patch checks its super against
 	dataStart int64
@@ -103,24 +113,24 @@ func fixName(n string) string {
 	return n
 }
 
-// OpenIFS reads the header and manifest of an IFS file.
-func OpenIFS(path string) (*IFS, error) {
-	f, err := os.Open(path)
+// openIFS reads the header and manifest of the IFS file of a layer.
+func openIFS(l Layer, name string) (*IFS, error) {
+	f, err := l.fsys.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	head := make([]byte, 36)
 	if _, err := io.ReadFull(f, head[:20]); err != nil {
-		return nil, fmt.Errorf("%s: %v", filepath.Base(path), err)
+		return nil, fmt.Errorf("%s: %v", path.Base(name), err)
 	}
 	if binary.BigEndian.Uint32(head) != ifsSignature {
-		return nil, i18n.Errorf("%s: IFS ではありません", "%s: not an IFS", filepath.Base(path))
+		return nil, i18n.Errorf("%s: IFS ではありません", "%s: not an IFS", path.Base(name))
 	}
 	version := binary.BigEndian.Uint16(head[4:])
 	manifestEnd := int64(binary.BigEndian.Uint32(head[16:]))
 	manifestStart := int64(20)
-	fs := &IFS{path: path, dataStart: manifestEnd, files: map[string]ifsEntry{}}
+	fs := &IFS{fsys: l.fsys, deferred: l.deferred, path: name, dataStart: manifestEnd, files: map[string]ifsEntry{}}
 	if version > 1 {
 		if _, err := io.ReadFull(f, head[20:36]); err != nil {
 			return nil, err
@@ -129,7 +139,7 @@ func OpenIFS(path string) (*IFS, error) {
 		manifestStart = 36
 	}
 	if manifestEnd <= manifestStart || manifestEnd-manifestStart > 64<<20 {
-		return nil, i18n.Errorf("%s: 目録の位置が不正です", "%s: invalid manifest position", filepath.Base(path))
+		return nil, i18n.Errorf("%s: 目録の位置が不正です", "%s: invalid manifest position", path.Base(name))
 	}
 	manifest := make([]byte, manifestEnd-manifestStart)
 	n, err := io.ReadFull(f, manifest)
@@ -140,7 +150,7 @@ func OpenIFS(path string) (*IFS, error) {
 	}
 	root, err := eamuse.DecodeBinary(manifest)
 	if err != nil {
-		return nil, i18n.Errorf("%s: 目録を読めません: %v", "%s: cannot read the manifest: %v", filepath.Base(path), err)
+		return nil, i18n.Errorf("%s: 目録を読めません: %v", "%s: cannot read the manifest: %v", path.Base(name), err)
 	}
 	fs.walk(root, "")
 	return fs, nil
@@ -194,24 +204,31 @@ func (fs *IFS) find(id string) string {
 func (fs *IFS) read(name string, super *IFS) ([]byte, error) {
 	e, ok := fs.files[name]
 	if !ok {
-		return nil, i18n.Errorf("%s に %s がありません", "%s has no %s", filepath.Base(fs.path), name)
+		return nil, i18n.Errorf("%s に %s がありません", "%s has no %s", path.Base(fs.path), name)
 	}
 	if e.backref {
 		if super == nil {
-			return nil, i18n.Errorf("%s: %s は元の IFS にあります", "%s: %s is in the original IFS", filepath.Base(fs.path), name)
+			return nil, i18n.Errorf("%s: %s は元の IFS にあります", "%s: %s is in the original IFS", path.Base(fs.path), name)
 		}
 		return super.read(name, nil)
 	}
-	f, err := os.Open(fs.path)
+	if e.size < 0 || e.size > 256<<20 {
+		return nil, i18n.Errorf("%s: %s の大きさが不正です", "%s: %s has an invalid size", path.Base(fs.path), name)
+	}
+	if fs.deferred {
+		return nil, &NeedRead{fs.path, fs.dataStart + e.start, e.size}
+	}
+	f, err := fs.fsys.Open(fs.path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if e.size < 0 || e.size > 256<<20 {
-		return nil, i18n.Errorf("%s: %s の大きさが不正です", "%s: %s has an invalid size", filepath.Base(fs.path), name)
+	at, ok := f.(io.ReaderAt)
+	if !ok {
+		return nil, fmt.Errorf("%s: cannot read at an offset", path.Base(fs.path))
 	}
 	buf := make([]byte, e.size)
-	_, err = f.ReadAt(buf, fs.dataStart+e.start)
+	_, err = at.ReadAt(buf, fs.dataStart+e.start)
 	return buf, err
 }
 
@@ -219,8 +236,33 @@ func (fs *IFS) read(name string, super *IFS) ([]byte, error) {
 
 // Layer is one sound folder: a mod in data_mods, or data itself (Mod == "").
 type Layer struct {
-	Mod string
-	Dir string // .../sound
+	Mod      string
+	Dir      string // its sound folder in the game folder: data/sound, data_mods/<mod>/sound
+	fsys     fs.FS  // the game folder
+	deferred bool   // charts are located, not read (see NeedRead)
+}
+
+// NeedRead is a chart a scan of a Listing located but could not read: the browser reads it.
+// Size -1 = the whole file.
+type NeedRead struct {
+	Path   string `json:"path"`
+	Offset int64  `json:"offset"`
+	Size   int64  `json:"size"`
+}
+
+func (n *NeedRead) Error() string { return "not read here: " + n.Path }
+
+// readFile reads a whole file of a layer (or locates it, see NeedRead).
+func (l Layer) readFile(name string) ([]byte, error) {
+	if l.deferred {
+		return nil, &NeedRead{name, 0, -1}
+	}
+	return fs.ReadFile(l.fsys, name)
+}
+
+func (l Layer) isFile(name string) bool {
+	st, err := fs.Stat(l.fsys, name)
+	return err == nil && !st.IsDir()
 }
 
 // Root returns the game folder (the one holding data and data_mods) for a path the user gave:
@@ -240,36 +282,56 @@ func Root(path string) (string, error) {
 	return root, nil
 }
 
-// Layers returns the sound folders of a game folder, mods first in the order LayeredFS searches
-// them. mods selects which mods to use; nil means all, empty means none (omnimix copied into data).
-func Layers(path string, mods []string) ([]Layer, error) {
-	root, err := Root(path)
+// Layers returns the sound folders of a game folder on this PC, mods first in the order LayeredFS
+// searches them. mods selects which mods to use; nil means all, empty means none (omnimix copied
+// into data).
+func Layers(folder string, mods []string) ([]Layer, error) {
+	root, err := Root(folder)
 	if err != nil {
 		return nil, err
 	}
-	base := filepath.Join(root, "data", "sound")
+	return layersOf(os.DirFS(root), false, mods), nil
+}
+
+// Listing returns the sound folders of a game folder on the PC of a browser, from what it sent:
+// every file of the sound folders by path in the game folder ("data/sound/01000.ifs"), with the
+// start of each IFS up to the end of its manifest (other files: nothing). Its charts are located,
+// not read (Song.Need).
+func Listing(files map[string][]byte, mods []string) []Layer {
+	game := fstest.MapFS{}
+	for name, head := range files {
+		if fs.ValidPath(name) {
+			game[name] = &fstest.MapFile{Data: head}
+		}
+	}
+	return layersOf(game, true, mods)
+}
+
+func layersOf(game fs.FS, deferred bool, mods []string) []Layer {
 	var layers []Layer
 	want := map[string]bool{}
 	for _, m := range mods {
 		want[m] = true
 	}
-	for _, m := range Mods(root) {
+	for _, m := range modsOf(game) {
 		if mods == nil || want[m] {
-			layers = append(layers, Layer{m, filepath.Join(root, "data_mods", m, "sound")})
+			layers = append(layers, Layer{m, "data_mods/" + m + "/sound", game, deferred})
 		}
 	}
-	return append(layers, Layer{"", base}), nil
+	return append(layers, Layer{"", "data/sound", game, deferred})
 }
 
 // Mods lists the mods in data_mods that contain a sound folder, alphabetically.
-func Mods(root string) []string {
-	entries, err := os.ReadDir(filepath.Join(root, "data_mods"))
+func Mods(root string) []string { return modsOf(os.DirFS(root)) }
+
+func modsOf(game fs.FS) []string {
+	entries, err := fs.ReadDir(game, "data_mods")
 	if err != nil {
 		return nil
 	}
 	var out []string
 	for _, e := range entries {
-		if st, err := os.Stat(filepath.Join(root, "data_mods", e.Name(), "sound")); e.IsDir() && err == nil && st.IsDir() {
+		if st, err := fs.Stat(game, "data_mods/"+e.Name()+"/sound"); e.IsDir() && err == nil && st.IsDir() {
 			out = append(out, e.Name())
 		}
 	}
@@ -279,11 +341,12 @@ func Mods(root string) []string {
 
 // Song is the result for one song.
 type Song struct {
-	ID     int64
-	Source string        // where the chart came from, for the report
-	Counts map[int]int64 // chart index -> notes
-	Err    string        // why the chart could not be read, in Japanese
-	ErrEn  string        // and in English
+	ID     int64         `json:"id"`
+	Source string        `json:"source"`           // where the chart came from, for the report
+	Counts map[int]int64 `json:"counts,omitempty"` // chart index -> notes
+	Err    string        `json:"error,omitempty"`  // why the chart could not be read, in Japanese
+	ErrEn  string        `json:"error_en,omitempty"`
+	Need   *NeedRead     `json:"need,omitempty"` // a Listing's chart, for the browser to read and count
 }
 
 var songName = regexp.MustCompile(`^(\d{5})(-p0)?(\.ifs|_ifs)?$`)
@@ -292,7 +355,7 @@ var songName = regexp.MustCompile(`^(\d{5})(-p0)?(\.ifs|_ifs)?$`)
 func Scan(layers []Layer) []Song {
 	ids := map[string]bool{}
 	for _, l := range layers {
-		entries, _ := os.ReadDir(l.Dir)
+		entries, _ := fs.ReadDir(l.fsys, l.Dir)
 		for _, e := range entries {
 			if m := songName.FindStringSubmatch(e.Name()); m != nil && (m[3] != "" || e.IsDir()) {
 				ids[m[1]] = true
@@ -310,6 +373,11 @@ func Scan(layers []Layer) []Song {
 		s := Song{ID: n}
 		data, source, err := chartOf(layers, id)
 		s.Source = source
+		if need := (*NeedRead)(nil); errors.As(err, &need) {
+			s.Need = need
+			out = append(out, s)
+			continue
+		}
 		if err == nil && data == nil {
 			continue // audio only (e.g. a preview) - no chart
 		}
@@ -324,19 +392,19 @@ func Scan(layers []Layer) []Song {
 	return out
 }
 
-// resolve finds a path relative to the sound folder in the first layer that has it.
-func resolve(layers []Layer, rel string) (string, string) {
+// resolve finds a path relative to the sound folder in the first layer that has it: the layer,
+// the path in the game folder and the layer's name ("" when none has it).
+func resolve(layers []Layer, rel string) (Layer, string, string) {
 	for _, l := range layers {
-		p := filepath.Join(l.Dir, filepath.FromSlash(rel))
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		if p := path.Join(l.Dir, rel); l.isFile(p) {
 			name := l.Mod
 			if name == "" {
 				name = "data"
 			}
-			return p, name
+			return l, p, name
 		}
 	}
-	return "", ""
+	return Layer{}, "", ""
 }
 
 // ifsChart reads the chart out of an IFS, honouring <name>_ifs/<file> replacements in mods.
@@ -354,9 +422,9 @@ func ifsChart(layers []Layer, ifsName, id string, fs, super *IFS) ([]byte, strin
 			continue // replacements only come from mods
 		}
 		for _, rel := range []string{folder + inner, folder + inner[strings.LastIndex(inner, "/")+1:]} {
-			p := filepath.Join(l.Dir, filepath.FromSlash(rel))
-			if b, err := os.ReadFile(p); err == nil {
-				return b, l.Mod + "/" + rel, nil
+			if p := path.Join(l.Dir, rel); l.isFile(p) {
+				b, err := l.readFile(p)
+				return b, l.Mod + "/" + rel, err
 			}
 		}
 	}
@@ -369,9 +437,9 @@ func ifsChart(layers []Layer, ifsName, id string, fs, super *IFS) ([]byte, strin
 }
 
 func chartOf(layers []Layer, id string) ([]byte, string, error) {
-	basePath, baseLayer := resolve(layers, id+".ifs")
-	if p0Path, p0Layer := resolve(layers, id+"-p0.ifs"); p0Path != "" {
-		p0, err := OpenIFS(p0Path)
+	base, basePath, baseLayer := resolve(layers, id+".ifs")
+	if p0l, p0Path, p0Layer := resolve(layers, id+"-p0.ifs"); p0Path != "" {
+		p0, err := openIFS(p0l, p0Path)
 		if err != nil {
 			return nil, p0Layer + "/" + id + "-p0.ifs", err
 		}
@@ -379,7 +447,7 @@ func chartOf(layers []Layer, id string) ([]byte, string, error) {
 		usable := true
 		if p0.superName != "" {
 			if basePath != "" {
-				super, err = OpenIFS(basePath)
+				super, err = openIFS(base, basePath)
 			}
 			// the game drops a patch whose base changed ("broken super: missmatch fingerprint")
 			usable = super != nil && err == nil && (p0.superMD5 == nil || bytes.Equal(super.md5, p0.superMD5))
@@ -392,7 +460,7 @@ func chartOf(layers []Layer, id string) ([]byte, string, error) {
 		}
 	}
 	if basePath != "" {
-		fs, err := OpenIFS(basePath)
+		fs, err := openIFS(base, basePath)
 		if err != nil {
 			return nil, baseLayer + "/" + id + ".ifs", err
 		}
@@ -401,8 +469,8 @@ func chartOf(layers []Layer, id string) ([]byte, string, error) {
 			return b, sourceName(baseLayer+"/"+id+".ifs", replaced), err
 		}
 	}
-	if p, layer := resolve(layers, id+"/"+id+".1"); p != "" {
-		b, err := os.ReadFile(p)
+	if l, p, layer := resolve(layers, id+"/"+id+".1"); p != "" {
+		b, err := l.readFile(p)
 		return b, layer + "/" + id + "/" + id + ".1", err
 	}
 	return nil, "", nil
