@@ -39,6 +39,10 @@ zip に同梱している、ゲームに読み込ませる DLL。使っている
 - tracker_link.dll: `tracker_link\build.ps1`（Visual Studio の C++ ツールが必要）
 - 配布物一式: `build.ps1`
 
+GitHub のリリースは、タグを付けたソースから GitHub Actions（[.github/workflows/build.yml](.github/workflows/build.yml)）でビルドしている。
+各リリースの SHA256SUMS.txt に SHA-256 があり、`gh attestation verify <ファイル> -R iamiamsub/iidx-tracker` で
+そのファイルがそこでビルドされたことを確かめられる。
+
 ## ライセンス
 
 MIT（[LICENSE](LICENSE)）。他のプロジェクトから取り込んだ部分はそれぞれのライセンスのまま:

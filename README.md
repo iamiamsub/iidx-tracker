@@ -39,6 +39,10 @@ FAST/SLOW per judgment and the score rate of each measure. Put it in the game's 
 - tracker_link.dll: `tracker_link\build.ps1` (needs the Visual Studio C++ tools)
 - Release files: `build.ps1`
 
+Releases on GitHub are built by GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) from the tagged source.
+Each release lists its SHA-256 checksums in SHA256SUMS.txt, and `gh attestation verify <file> -R iamiamsub/iidx-tracker`
+confirms that a file was built there.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Parts taken from other projects keep their licenses: the kbinxml port

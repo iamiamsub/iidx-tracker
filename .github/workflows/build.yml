@@ -1,0 +1,104 @@
+# Builds the release packages with build.ps1 (tests, the executables for Windows / Linux x64 /
+# Linux ARM64, tracker_link.dll, license notices, zips) on every push, and drafts a GitHub
+# release for a version tag such as "1.0.1".
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ["[0-9]*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write       # build provenance
+      attestations: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # tracker_link\build.ps1 uses VCPKG_ROOT when it is set
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP vcpkg
+          git clone --quiet https://github.com/microsoft/vcpkg $root
+          & (Join-Path $root bootstrap-vcpkg.bat) -disableMetrics
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "dev-" + $env:GITHUB_SHA.Substring(0, 7) }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: .\build.ps1 -Version $env:VERSION
+
+      - name: Checksums
+        shell: pwsh
+        working-directory: dist
+        run: |
+          $files = @(Get-ChildItem -Filter *.zip) +
+            @(Get-ChildItem -Path *-windows-amd64 -Include iidx-tracker.exe, tracker_link.dll -Recurse)
+          $lines = $files | ForEach-Object {
+            $name = $_.FullName.Substring($PWD.Path.Length + 1).Replace("\", "/")
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $name
+          }
+          # LF line ends, so "sha256sum -c" works on Linux too
+          [IO.File]::WriteAllText((Join-Path $PWD SHA256SUMS.txt), ($lines -join "`n") + "`n")
+          Get-Content SHA256SUMS.txt
+
+      # Lets anyone check that a released file was built here: gh attestation verify <file> -R <owner>/<repo>
+      - name: Build provenance
+        if: github.ref_type == 'tag' && !github.event.repository.private
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*-windows-amd64/iidx-tracker.exe
+            dist/*-windows-amd64/tracker_link.dll
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: iidx-tracker-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+
+  # A draft: publish it on GitHub after writing the release notes.
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: iidx-tracker-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: >
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --draft
+          --title "IIDX Tracker $TAG" --notes "SHA-256 checksums: SHA256SUMS.txt"
