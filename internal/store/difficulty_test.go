@@ -28,7 +28,7 @@ func TestTiers(t *testing.T) {
 	if s := TierSources(12); s["normal"].Source == "" || s["dp"].Fetched != "2026-09-27" {
 		t.Fatalf("sources: %+v", s)
 	}
-	if s := TierSources(11); s["hard"].Source != "https://w.atwiki.jp/bemani2sp11/" || s["dp"].Source == "" {
+	if s := TierSources(11); s["hard"].Name != "SP☆11 ハード難易度表 (2026-09-16)" || s["dp"].Source == "" {
 		t.Fatalf("☆11 sources: %+v", s)
 	}
 

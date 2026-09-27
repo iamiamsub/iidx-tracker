@@ -124,7 +124,7 @@ const tierDetail = (tier, sources = {}, level) => {
   const link = (kind, text) => (sources[kind]
     ? `<a href="${esc(sources[kind].source)}" target="_blank" rel="noopener">${esc(text)}</a> (${t("{0} 時点", esc(sources[kind].fetched))})` : esc(text));
   if (tier.dp) return link("dp", `${t("DP非公式難易度")} ${tier.dp.label}`);
-  return link("normal", `${level == 11 ? t("☆11難易度表 (2025-02)") : t("☆12参考表")} ${t("ノマゲ")} ${tier.normal?.label ?? "-"}${SEP}${t("ハード")} ${tier.hard?.label ?? "-"}`);
+  return link("normal", `${level == 11 ? t("☆11難易度表") : t("☆12参考表")} ${t("ノマゲ")} ${tier.normal?.label ?? "-"}${SEP}${t("ハード")} ${tier.hard?.label ?? "-"}`);
 };
 
 // music_play_log folder_type: the music select folder the song was picked from (bm2dx folder ids,

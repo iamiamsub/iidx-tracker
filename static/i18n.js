@@ -177,7 +177,7 @@ const EN = {
   "難易度表のランク: SP☆11・☆12 はノマゲ / ハード難易度表（* は個人差）、DP は非公式難易度": "Difficulty table rank: SP☆11 / ☆12 by the normal / hard clear tables (* = individual difference), DP by the unofficial difficulty",
   "DP非公式難易度": "DP unofficial difficulty",
   "☆12参考表": "☆12 reference table",
-  "☆11難易度表 (2025-02)": "☆11 table (2025-02)",
+  "☆11難易度表": "☆11 difficulty table",
   "ノマゲ": "normal clear",
   "ハード": "hard clear",
   "{0} 時点": "as of {0}",

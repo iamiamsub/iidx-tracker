@@ -13,8 +13,8 @@ import (
 )
 
 // Difficulty tables, taken once (2026-09-27) and built in: the SP☆12 normal / hard clear reference
-// tables ("☆12参考表"), the SP☆11 normal / hard clear tables (the atwiki archive of 2025-02-22; rank
-// F..S+ as 1..10 in both) and the DP unofficial difficulty table (5.9..12.7), matched to music ids by
+// tables ("☆12参考表"), the SP☆11 normal / hard clear tables (2026-09-16; rank F..S+ as 1..10 in
+// both, ☆11 has no + ranks) and the DP unofficial difficulty table (5.9..12.7), matched to music ids by
 // the difficulty-tables tool. The ranks are the work of those tables'
 // authors and voters (credited in the README); they apply to the arcade charts, not chart sets.
 // The tiers page changes ranks over the snapshot (tier_overrides).
