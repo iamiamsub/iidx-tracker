@@ -477,7 +477,7 @@ func (s *Store) ChartRows(key, style string, level int64, category, query string
 				row["notes"], row["notes_source"] = customNotes, unknownSet
 			}
 			row["djpoint"] = val(bestDjPoint(b, nc))
-			if t := Tiers(mid, chart); t != nil && custom == nil { // the arcade charts only
+			if t := s.Tiers(mid, chart); t != nil && custom == nil { // the arcade charts only
 				row["tier"] = t
 			}
 			if b != nil {
@@ -595,7 +595,7 @@ func (s *Store) Chart(key string, db any, music, chart int64, set string) (map[s
 	if m, ok := meta[music]; ok {
 		out["song"] = m
 	}
-	if t := Tiers(music, chart); t != nil && set == "" {
+	if t := s.Tiers(music, chart); t != nil && set == "" {
 		out["tier"], out["tier_sources"] = t, TierSources()
 	}
 	var nc *noteCount

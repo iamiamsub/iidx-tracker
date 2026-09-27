@@ -241,6 +241,11 @@ var apiRoutes = map[string]apiFunc{
 		_, err = a.store.Exec("DELETE FROM custom_charts WHERE chart_set = ?", str(b["name"]))
 		return map[string]any{"ok": true}, err
 	},
+	"GET /api/tiers": func(a *App, q url.Values, _ []byte) (any, error) {
+		level, _ := strconv.ParseInt(qget(q, "level"), 10, 64)
+		return a.store.TierRows(qget(q, "kind"), level, dbParam(a, q))
+	},
+	"POST /api/tiers/set": apiTierSet,
 	"GET /api/musicdata/unassigned": func(a *App, _ url.Values, _ []byte) (any, error) { return a.store.Unassigned() },
 	"POST /api/musicdata/assign":    apiMusicDataAssign,
 }
@@ -634,6 +639,28 @@ func apiCategoryCreate(a *App, _ url.Values, raw []byte) (any, error) {
 	}
 	id, err := a.store.Exec("INSERT INTO categories (name, color, created_at) VALUES (?, ?, ?)", name, color, time.Now().Unix())
 	return map[string]any{"id": id}, err
+}
+
+// apiTierSet: {kind, music_id, chart, label (null: no rank), reset (true: back to the snapshot)}.
+func apiTierSet(a *App, _ url.Values, raw []byte) (any, error) {
+	b, err := jsonBody(raw)
+	if err != nil {
+		return nil, err
+	}
+	music, err := needInt(b["music_id"], "music_id")
+	if err != nil {
+		return nil, err
+	}
+	chart, err := needInt(b["chart"], "chart")
+	if err != nil {
+		return nil, err
+	}
+	var label *string
+	if l, ok := b["label"].(string); ok {
+		label = &l
+	}
+	current, err := a.store.SetTier(str(b["kind"]), music, chart, label, truthy(b["reset"]))
+	return map[string]any{"current": current}, err
 }
 
 func apiCategoryUpdate(a *App, _ url.Values, raw []byte) (any, error) {

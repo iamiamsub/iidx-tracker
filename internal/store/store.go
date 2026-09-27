@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT, created_at INTEGER);
 CREATE TABLE IF NOT EXISTS category_songs (
     category_id INTEGER, music_id INTEGER, PRIMARY KEY (category_id, music_id));
-` + customChartsSchema + musicFilesSchema + importSongsSchema
+` + customChartsSchema + musicFilesSchema + importSongsSchema + tierOverridesSchema
 
 // importSongsSchema: the song list of every imported music data file, so that one import can be
 // taken back (songs is rebuilt from the imports that remain, see DeleteImport).
@@ -121,6 +121,14 @@ CREATE TABLE IF NOT EXISTS import_songs (
     import_id INTEGER NOT NULL, music_id INTEGER NOT NULL,
     title TEXT, title_ascii TEXT, genre TEXT, artist TEXT, subtitle TEXT, version INTEGER, levels TEXT,
     PRIMARY KEY (import_id, music_id));
+`
+
+// tierOverridesSchema: difficulty-table ranks changed on the tiers page, over the built-in snapshot
+// (difficulty.go); a NULL label takes the snapshot's rank away.
+const tierOverridesSchema = `
+CREATE TABLE IF NOT EXISTS tier_overrides (
+    kind TEXT NOT NULL, music_id INTEGER NOT NULL, chart INTEGER NOT NULL, label TEXT, value REAL,
+    changed_at INTEGER, PRIMARY KEY (kind, music_id, chart));
 `
 
 // musicFilesSchema: every music data file tracker_link.dll reported, and the music database the
@@ -163,6 +171,7 @@ type Store struct {
 	mu     sync.Mutex // guards active and meta
 	active map[sessionKey]int64
 	meta   map[string]map[int64]SongMeta // per music database (see SongMetas)
+	tiers  map[chartKey]map[string]Tier  // the ranks in use (see Tiers), nil until read
 }
 
 // Call is one recorded request: model, cabinet (PCBID = the call's srcid), module and method,
@@ -272,6 +281,10 @@ var migrations = []func(tx *sql.Tx) error{
 			}
 		}
 		return nil
+	},	// 5 -> 6 (2026-09-27): difficulty-table ranks changed in the tracker
+	func(tx *sql.Tx) error {
+		_, err := tx.Exec(tierOverridesSchema)
+		return err
 	},
 }
 

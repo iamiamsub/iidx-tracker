@@ -429,6 +429,7 @@ const routes = [
   [/^#\/chart\/(\d+)\/(\d+)/, viewChart],
   [/^#\/musicdb/, viewMusicDb],
   [/^#\/categories/, viewCategories],
+  [/^#\/tiers/, viewTiers],
   [/^#\/settings/, viewSettings],
 ];
 
@@ -1564,6 +1565,80 @@ async function viewCategories(view) {
     await post("/api/categories/update", {id: +b.dataset.del, delete: true});
     render();
   }));
+}
+
+// Difficulty tables: a table's charts in the music DB with the built-in snapshot's rank and the one
+// in use; picking a rank changes it at once (kept over the snapshot until set back).
+async function viewTiers(view) {
+  const q = hashParams();
+  const kind = ["normal", "hard", "dp"].includes(q.kind) ? q.kind : localStorage.getItem("tiers.kind") || "normal";
+  const level = q.level || localStorage.getItem("tiers.level") || "12";
+  localStorage.setItem("tiers.kind", kind);
+  localStorage.setItem("tiers.level", level);
+  const d = await api(`/api/tiers?${ctx({kind, level})}`);
+  const RANKS = ["F", "E", "D", "C", "B", "B+", "A", "A+", "S", "S+"];
+  const rankSelect = (cur) => `<select class="tier-edit">${[`<option value="">${t("なし")}</option>`,
+    ...["地力", "個人差"].flatMap((k) => RANKS.map((r) => `<option${k + r === cur ? " selected" : ""}>${k + r}</option>`))].join("")}</select>`;
+  const editor = (r) => (kind === "dp"
+    ? `<input class="tier-edit" type="number" step="0.1" min="1" max="13" style="width:6em" value="${esc(r.current ?? "")}" placeholder="${t("なし")}">`
+    : rankSelect(r.current));
+  const src = d.source || {};
+  view.innerHTML = `
+    <h1>${t("難易度表")}</h1>
+    <div class="panel">
+      <p class="dim small">${t("曲一覧・譜面の画面に出すランク。組み込みの写し ({0}) をここで変えられる。変えたものは「写しに戻す」まで残り、写しに無い譜面 (新曲など) にも付けられる。",
+        src.source ? `<a href="${esc(src.source)}" target="_blank" rel="noopener">${esc(src.name)}</a>, ${esc(src.fetched)}` : "-")}</p>
+      <div class="row">
+        <select id="tr-kind">
+          <option value="normal"${kind === "normal" ? " selected" : ""}>${t("SP☆12 ノマゲ")}</option>
+          <option value="hard"${kind === "hard" ? " selected" : ""}>${t("SP☆12 ハード")}</option>
+          <option value="dp"${kind === "dp" ? " selected" : ""}>${t("DP 非公式難易度")}</option>
+        </select>
+        ${kind === "dp" ? `<select id="tr-level">${Array.from({length: 12}, (_, i) => 12 - i).map((l) => `<option value="${l}"${String(l) === level ? " selected" : ""}>☆${l}</option>`).join("")}</select>` : ""}
+        <input id="tr-q" placeholder="${t("曲名で絞り込み")}">
+        <label><input type="checkbox" id="tr-changed"> ${t("変えたものだけ")}</label>
+        <label><input type="checkbox" id="tr-none"> ${t("ランクの無いものだけ")}</label>
+        <span class="dim small" id="tr-count"></span>
+      </div>
+    </div>
+    <div class="panel"><div class="table-wrap"><table><thead><tr>
+      <th>${t("タイトル")}</th><th>${t("譜面")}</th><th>${t("写し")}</th><th>${t("ランク")}</th><th></th></tr></thead>
+      <tbody id="tr-rows"></tbody></table></div></div>`;
+  const collator = new Intl.Collator("ja");
+  const rows = d.rows.sort((a, b) => collator.compare(a.title, b.title) || a.chart - b.chart);
+  const draw = () => {
+    const f = $("#tr-q").value.trim().toLowerCase();
+    const shown = rows.filter((r) => (!f || r.title.toLowerCase().includes(f)) &&
+      (!$("#tr-changed").checked || r.current !== r.snapshot) && (!$("#tr-none").checked || r.current == null));
+    $("#tr-rows").innerHTML = shown.map((r) => `
+      <tr data-mid="${r.music_id}" data-chart="${r.chart}">
+        <td><a href="${chartHref(r.music_id, r.chart)}">${esc(r.title)}</a></td><td>${chartTag(r.chart)}</td>
+        <td class="small">${esc(r.snapshot ?? "-")}</td><td>${editor(r)}</td>
+        <td>${r.current !== r.snapshot ? `<button class="tier-reset">${t("写しに戻す")}</button>` : ""}</td></tr>`).join("");
+    const changed = rows.filter((r) => r.current !== r.snapshot).length;
+    $("#tr-count").textContent = t("{0} / {1} 譜面", shown.length, rows.length) + (changed ? `${SEP}${t("変えたもの {0}", changed)}` : "");
+  };
+  const save = async (tr, body) => {
+    const r = rows.find((x) => x.music_id === +tr.dataset.mid && x.chart === +tr.dataset.chart);
+    try {
+      r.current = (await post("/api/tiers/set", {kind, music_id: r.music_id, chart: r.chart, ...body})).current;
+      toast(t("変更しました"), true);
+    } catch (e) { toast(e.message); }
+    draw();
+  };
+  $("#tr-rows").addEventListener("change", (e) => {
+    if (e.target.classList.contains("tier-edit")) save(e.target.closest("tr"), {label: e.target.value || null});
+  });
+  $("#tr-rows").addEventListener("click", (e) => {
+    if (e.target.classList.contains("tier-reset")) save(e.target.closest("tr"), {reset: true});
+  });
+  const go = () => {
+    location.hash = `#/tiers?${new URLSearchParams({kind: $("#tr-kind").value, level: $("#tr-level")?.value ?? level})}`;
+  };
+  $("#tr-kind").addEventListener("change", go);
+  $("#tr-level")?.addEventListener("change", go);
+  for (const id of ["#tr-q", "#tr-changed", "#tr-none"]) $(id).addEventListener("input", draw);
+  draw();
 }
 
 // Where the game should connect: this PC, plus every LAN address when listening on all interfaces.
