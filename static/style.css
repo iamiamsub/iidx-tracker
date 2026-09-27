@@ -119,6 +119,11 @@ td.title { white-space: normal; min-width: 220px; }
 
 .detail { background: #141824; }
 .detail td { white-space: normal; }
+.detail td.dim { white-space: nowrap; } /* the names of the detail rows */
+/* a play's detail keeps to the visible part of its wide table (the width is set when it opens) */
+.detail > td > .grid { position: sticky; left: 8px; }
+/* column names written out in full: small and on two lines when long */
+th.word { font-size: 11px; white-space: normal; line-height: 1.25; min-width: 44px; }
 .pill { display: inline-block; padding: 2px 8px; border-radius: 99px; background: var(--panel2);
         border: 1px solid var(--line); font-size: 12px; }
 .pill.tdj { border-color: #7a4bd6; color: #cbb3ff; }

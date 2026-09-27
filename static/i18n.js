@@ -158,7 +158,7 @@ const EN = {
   "プレイから推定": "estimated from plays",
   "ベストランプ": "Best lamp",
   "ベストEX": "Best EX",
-  "ベストBP": "Best BP",
+  "ベストミスカウント": "Best miss count",
   "難易度": "Tier",
   "難易度表": "Tiers",
   "曲一覧・譜面の画面に出すランク。組み込みの写し ({0}) をここで変えられる。変えたものは「写しに戻す」まで残り、写しに無い譜面 (新曲など) にも付けられる。":
@@ -183,6 +183,7 @@ const EN = {
   "{0} 時点": "as of {0}",
   "EXスコア推移": "EX score history",
   "ミスカウント推移": "Miss count history",
+  "ミスカウント": "Miss count",
   "判定内訳": "Judgments",
   "区間ごとの取りこぼし": "EX lost per section",
   "完走した直近 {0} プレイの平均 (ノーツ {1})": "average of the last {0} completed plays ({1} notes)",
@@ -224,7 +225,6 @@ const EN = {
   "空POOR を含む": "includes empty POORs",
   "鍵盤ごとの判定": "Judgments per key",
   "空POOR": "Empty POOR",
-  "空": "EP",
   "小節ごとのスコアレート": "Score rate per measure",
 
   // music DB

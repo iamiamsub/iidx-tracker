@@ -12,10 +12,9 @@ const DAN = pick(["七級", "六級", "五級", "四級", "三級", "二級", "�
              "五段", "六段", "七段", "八段", "九段", "十段", "中伝", "皆伝"],
   ["7th kyu", "6th kyu", "5th kyu", "4th kyu", "3rd kyu", "2nd kyu", "1st kyu", "1st dan", "2nd dan", "3rd dan",
    "4th dan", "5th dan", "6th dan", "7th dan", "8th dan", "9th dan", "10th dan", "Chuden", "Kaiden"]);
-const RADAR = ["NOTES", "CHORD", "PEAK", "CHARGE", "SCRATCH", "SOF-LAN"];
-// pc.get radar_score comes in the game's attribute order NOTES, PEAK, SCRATCH, SOF-LAN, CHARGE, CHORD
-// (bm2dx Radar_FilterValueToAttr); RADAR above is the in-game display order: RADAR[i] = value[RADAR_ATTR[i]].
-const RADAR_ATTR = [0, 5, 1, 4, 2, 3];
+// pc.get radar_score comes in the game's attribute order (bm2dx Radar_FilterValueToAttr), which the
+// game's NOTES RADAR draws clockwise from the top.
+const RADAR = ["NOTES", "PEAK", "SCRATCH", "SOF-LAN", "CHARGE", "CHORD"];
 // Target graph numbers whose target bm2dx builds itself (CTargetCommonScoreGraph::BuildTargetLine);
 // the others take their target from the server (rivals, pacemakers, battles).
 const GRAPHS = {20: "AAA", 21: "AA", 22: "A", 23: t("ペース"), 24: t("次の DJ LEVEL"), 25: t("自己ベスト+")};
@@ -38,7 +37,7 @@ const VERSIONS = {0: "1st style", 1: "substream", 2: "2nd style", 3: "3rd style"
   23: "copula", 24: "SINOBUZ", 25: "CANNON BALLERS", 26: "Rootage", 27: "HEROIC VERSE",
   28: "BISTROVER", 29: "CastHour", 30: "RESIDENT", 31: "EPOLIS", 32: "Pinky Crush",
   33: "Sparkle Shower", 80: "INFINITAS"};
-const JUDGE_COLORS = {PG: "#5cc8ff", GR: "#ffd23f", GD: "#7ee07e", BD: "#a970ff", PR: "#ff5a5a"};
+const JUDGE_COLORS = {PGREAT: "#5cc8ff", GREAT: "#ffd23f", GOOD: "#7ee07e", BAD: "#a970ff", POOR: "#ff5a5a"};
 
 const state = {
   player: localStorage.getItem("player") || "",
@@ -403,17 +402,17 @@ function worstSections(sizes, lost, reached = 64, n = 3) {
 }
 
 function radarChart(box, values, max = 200) {
-  const S = 300, C = S / 2, Rr = 105;
-  const svg = svgEl("svg", {viewBox: `0 0 ${S} ${S}`, style: "max-width:320px;margin:auto"});
-  const pt = (i, r) => [C + r * Math.sin((i * Math.PI) / 3), C - r * Math.cos((i * Math.PI) / 3)];
+  const W = 360, H = 300, Rr = 100;
+  const svg = svgEl("svg", {viewBox: `0 0 ${W} ${H}`, style: "max-width:380px;margin:auto"});
+  const pt = (i, r) => [W / 2 + r * Math.sin((i * Math.PI) / 3), H / 2 - r * Math.cos((i * Math.PI) / 3)];
   for (const f of [0.25, 0.5, 0.75, 1]) {
     svgEl("polygon", {points: RADAR.map((_, i) => pt(i, Rr * f).join(",")).join(" "), fill: "none",
       stroke: "#2a2f3f"}, svg);
   }
-  RADAR.forEach((name, i) => {
-    const [x, y] = pt(i, Rr + 22);
-    svgEl("text", {x, y: y + 4, "text-anchor": "middle", fill: "#c9cedb", "font-size": 11}, svg,
-      `${name} ${values[i].toFixed(2)}`);
+  RADAR.forEach((name, i) => { // the name and under it the value, NOTES above the top and SOF-LAN under the bottom
+    const [x, y] = pt(i, Rr + 24), top = i == 0 ? -12 : i == 3 ? 8 : -2;
+    svgEl("text", {x, y: y + top, "text-anchor": "middle", fill: "#c9cedb", "font-size": 11}, svg, name);
+    svgEl("text", {x, y: y + top + 13, "text-anchor": "middle", fill: "#8a91a3", "font-size": 11}, svg, values[i].toFixed(2));
   });
   svgEl("polygon", {points: values.map((v, i) => pt(i, Rr * Math.min(1, v / max)).join(",")).join(" "),
     fill: "rgba(92,200,255,.25)", stroke: "#5cc8ff", "stroke-width": 2}, svg);
@@ -522,7 +521,7 @@ function playsTable(plays, {showSong = true, showPlayer = false} = {}) {
   if (!plays.length) return `<p class="dim">${t("まだプレイがありません")}</p>`;
   return `<div class="table-wrap"><table><thead><tr>
     <th>${t("日時")}</th>${showPlayer ? `<th>${t("プレイヤー")}</th>` : ""}${showSong ? `<th>${pick("曲", "Song")}</th>` : ""}<th>${t("譜面")}</th>
-    <th></th><th class="num">EX</th><th class="num">BP</th><th>${t("オプション")}</th><th>${t("筐体")}</th></tr></thead><tbody>
+    <th></th><th class="num word">EX SCORE</th><th class="num word">${t("ミスカウント")}</th><th>${t("オプション")}</th><th>${t("筐体")}</th></tr></thead><tbody>
     ${plays.map((p) => `<tr class="click" data-href="${chartHref(p.music_id, p.chart, p.chart_set)}">
       <td>${fmtDate(p.played_at)}${p.analyzed ? `<span class="pill analyze" title="${t("判定の詳細あり: 鍵盤ごとの判定と FAST/SLOW (譜面画面のプレイ履歴で行をクリック)")}">${t("アナライズ")}</span>` : ""}</td>
       ${showPlayer ? `<td>${esc(p.card_id ? playerName(p.card_id) : `IIDX ${p.iidx_id}`)}</td>` : ""}
@@ -645,14 +644,14 @@ async function viewPlayer(view, keyPart) {
     const style = $("#radar-style").value;
     if (state.set) { // computed from the set's bests (the logins' values belong to whichever set a credit ended on)
       const vals = (d.set_radar || {})[style.toUpperCase()];
-      if (vals) radarChart($("#radar"), RADAR_ATTR.map((a) => vals[a] / 100));
+      if (vals) radarChart($("#radar"), vals.map((v) => v / 100));
       else $("#radar").innerHTML = `<p class="dim">${d.set_charts ? t("データがありません") : t("曲DB 画面で 2dxtra.sqlite を取り込むと、この譜面セットのノーツレーダーを計算できます")}</p>`;
       return;
     }
     // the game's value, from the logins whose radar belongs to the game's charts
     const withRadar = d.sessions.filter((s) => radarOf(s, style) && s[`radar_${style}_set`] == null);
     const vals = radarOf(withRadar[withRadar.length - 1], style);
-    if (vals) radarChart($("#radar"), RADAR_ATTR.map((a) => vals[a]));
+    if (vals) radarChart($("#radar"), vals);
     else $("#radar").innerHTML = `<p class="dim">${t("データがありません")}</p>`;
     lineChart($("#radar-history"), [{color: "#5cc8ff", points: withRadar.map((s) => {
       const total = radarOf(s, style).reduce((a, b) => a + b, 0);
@@ -739,9 +738,9 @@ async function viewSongs(view) {
       <th><input type="checkbox" id="sel-all"></th>
       <th class="sort" data-k="level">Lv</th><th class="sort" data-k="tier_sort" title="${t("難易度表のランク: SP☆9〜☆12 はノマゲ / ハード難易度表（* は個人差）、DP は非公式難易度")}">${t("難易度")}</th>
       <th class="sort" data-k="title">${t("タイトル")}</th><th>${t("譜面")}</th>
-      <th class="sort" data-k="best_clear">${t("ランプ")}</th><th class="sort num" data-k="best_ex">EX</th>
-      <th class="sort num" data-k="rate">${t("レート")}</th><th>DJ LEVEL</th><th class="sort num" data-k="best_miss">BP</th>
-      <th class="sort num" data-k="djpoint" title="${t("DJ POINT (ベストEX・ベストランプ・DJ LEVEL から計算)")}">DJP</th>
+      <th class="sort" data-k="best_clear">${t("ランプ")}</th><th class="sort num word" data-k="best_ex">EX SCORE</th>
+      <th class="sort num" data-k="rate">${t("レート")}</th><th>DJ LEVEL</th><th class="sort num word" data-k="best_miss">${t("ミスカウント")}</th>
+      <th class="sort num" data-k="djpoint" title="${t("DJ POINT (ベストEX・ベストランプ・DJ LEVEL から計算)")}">DJ POINT</th>
       <th class="sort num" data-k="plays">${t("回数")}</th><th class="sort" data-k="version">${t("バージョン")}</th>
       <th class="sort" data-k="last_played">${t("最終プレイ")}</th></tr></thead>
       <tbody><tr><td colspan="13" class="dim">${t("読み込み中…")}</td></tr></tbody></table></div></div>`;
@@ -899,7 +898,7 @@ async function viewChart(view, mid, chart) {
       <div class="stat"><b>${lampBox(best.clear)} ${LAMPS[best.clear]}</b><span>${t("ベストランプ")}</span></div>
       <div class="stat"><b>${best.ex >= 0 ? best.ex : "-"}</b><span>${t("ベストEX")}</span></div>
       <div class="stat"><b>${dj ? `${(dj.rate * 100).toFixed(2)}%` : "-"}</b><span>${dj ? `${dj.grade} ${dj.diff}` : t("レート")}</span></div>
-      <div class="stat"><b>${Number.isFinite(best.miss) ? best.miss : "-"}</b><span>${t("ベストBP")}</span></div>
+      <div class="stat"><b>${Number.isFinite(best.miss) ? best.miss : "-"}</b><span>${t("ベストミスカウント")}</span></div>
       <div class="stat"><b>${d.djpoint != null ? djpText(d.djpoint) : "-"}</b><span>DJ POINT</span></div>
       <div class="stat"><b>${plays.length}</b><span>${t("プレイ回数")}</span></div>
     </div></div>
@@ -916,10 +915,10 @@ async function viewChart(view, mid, chart) {
       <div id="g-sections" class="chart-box"></div>
       <p class="small">${t("多い区間: {0}", esc(worstSections(d.sections.sizes, d.sections.lost) || t("なし")))}</p></div>` : ""}
     <div class="panel"><h2>${t("プレイ履歴")} <span class="dim small">${t("行をクリックでゲージ・スコア推移")}</span></h2>
-      <div class="table-wrap"><table id="hist"><thead><tr><th>${t("日時")}</th><th>${t("ランプ")}</th><th class="num">EX</th>
-      <th class="num">${t("レート")}</th><th class="num">BP</th><th class="num">PG</th><th class="num">GR</th><th class="num">GD</th>
-      <th class="num">BD</th><th class="num">PR</th><th class="num">CB</th><th class="num">F</th><th class="num">S</th>
-      <th class="num">${t("進行")}</th><th class="num">DJP</th><th>${t("オプション")}</th><th>${t("ゲージ")}</th><th>${t("筐体")}</th></tr></thead><tbody>
+      <div class="table-wrap"><table id="hist"><thead><tr><th>${t("日時")}</th><th>${t("ランプ")}</th><th class="num word">EX SCORE</th>
+      <th class="num">${t("レート")}</th><th class="num word">${t("ミスカウント")}</th><th class="num word">PGREAT</th><th class="num word">GREAT</th><th class="num word">GOOD</th>
+      <th class="num word">BAD</th><th class="num word">POOR</th><th class="num word">COMBO BREAK</th><th class="num word">FAST</th><th class="num word">SLOW</th>
+      <th class="num">${t("進行")}</th><th class="num word">DJ POINT</th><th>${t("オプション")}</th><th>${t("ゲージ")}</th><th>${t("筐体")}</th></tr></thead><tbody>
       ${plays.slice().reverse().map((p) => `<tr class="click" data-id="${p.id}">
         <td>${fmtDate(p.played_at)}${p.analyzed ? `<span class="pill analyze" title="${t("判定の詳細あり: 鍵盤ごとの判定と FAST/SLOW (譜面画面のプレイ履歴で行をクリック)")}">${t("アナライズ")}</span>` : ""}</td>
         <td>${lampBox(p.clear)} <span class="small">${LAMPS[p.clear ?? 0]}</span></td>
@@ -948,13 +947,13 @@ async function viewChart(view, mid, chart) {
     }
   }
   lineChart($("#g-ex"), exSeries, {xLabels, yMax: notes ? notes * 2 : undefined, xTip: playTip(plays)});
-  lineChart($("#g-bp"), [{name: "BP", color: "#ff5a5a",
+  lineChart($("#g-bp"), [{name: t("ミスカウント"), color: "#ff5a5a",
     points: plays.map((p) => ({y: p.miss_count >= 0 ? p.miss_count : null}))}],
     {xLabels, yMin: 0, xTip: playTip(plays)});
   const judged = plays.filter((p) => p.good != null);
   barChart($("#g-judge"), judged.map((p) => ({
     label: null, tip: fmtDate(p.played_at),
-    parts: [["PG", p.pgreat], ["GR", p.great], ["GD", p.good], ["BD", p.bad], ["PR", p.poor]]
+    parts: [["PGREAT", p.pgreat], ["GREAT", p.great], ["GOOD", p.good], ["BAD", p.bad], ["POOR", p.poor]]
       .map(([n, v]) => ({name: n, value: v || 0, color: JUDGE_COLORS[n]})),
   })), {normalize: true, legend: Object.entries(JUDGE_COLORS)});
   lineChart($("#g-fs"), [
@@ -980,7 +979,7 @@ async function viewChart(view, mid, chart) {
       (p.ex_score != null ? ` (${p.ex_score >= g.target_score ? "+" : ""}${p.ex_score - g.target_score})` : "") : null;
     const folder = folderName(g.folder_type, p.mode_type);
     const hasChatter = g.chatter && g.chatter.some((r) => r.some((v) => v));
-    tr.insertAdjacentHTML("afterend", `<tr class="detail"><td colspan="18"><div class="grid">
+    tr.insertAdjacentHTML("afterend", `<tr class="detail"><td colspan="18"><div class="grid" style="width:${tr.closest(".table-wrap").clientWidth - 16}px">
       <div><h2>${t("ゲージ推移")}</h2><div class="chart-box" id="d-gauge"></div></div>
       <div><h2>${t("スコア推移 (累積EX)")}</h2><div class="chart-box" id="d-ghost"></div></div>
       ${lost ? `<div><h2>${t("区間ごとの取りこぼし")} <span class="dim small">${t("ノーツを判定順に 64 等分")}</span></h2>
@@ -997,7 +996,7 @@ async function viewChart(view, mid, chart) {
         <tr><td class="dim">${t("選曲フォルダ")}</td><td>${esc(folder ?? (g.folder_type != null ? `#${g.folder_type}` : "-"))}</td></tr>
         <tr><td class="dim">DJ POINT</td><td>${djpText(p.djpoint) || "-"}</td></tr>
         <tr><td class="dim">${t("生の値")}</td><td class="mono small">option1 0x${(p.option1 ?? 0).toString(16)}${SEP}option2 0x${(p.option2 ?? 0).toString(16)}${SEP}gauge_type ${p.gauge_type ?? "-"}</td></tr>
-        <tr><td class="dim">${t("前回までのベスト")}</td><td>EX ${p.prev_best_score ?? "-"}${SEP}BP ${p.prev_best_miss >= 0 ? p.prev_best_miss : "-"}${SEP}${LAMPS[p.prev_best_clear ?? 0]}</td></tr>
+        <tr><td class="dim">${t("前回までのベスト")}</td><td>EX SCORE ${p.prev_best_score ?? "-"}${SEP}${t("ミスカウント")} ${p.prev_best_miss >= 0 ? p.prev_best_miss : "-"}${SEP}${LAMPS[p.prev_best_clear ?? 0]}</td></tr>
         <tr><td class="dim">${t("プレイサイド")}</td><td>${p.play_side === 1 ? "2P" : "1P"}</td></tr>
         <tr><td class="dim">${t("ゲーム")}</td><td class="mono small">${esc(p.model)}</td></tr>
         <tr><td class="dim">${t("サーバー")}</td><td class="mono small">${esc(p.upstream)}</td></tr>
@@ -1050,8 +1049,8 @@ function judgePanel(j, p) {
         <td class="num">${tm[f]}</td><td class="num">${tm[s]}</td><td class="num">${tm[f] + tm[s]}</td></tr>`).join("")}
     </table>
     <h2 style="margin-top:12px">${t("鍵盤ごとの判定")}</h2>
-    <div class="table-wrap"><table><thead><tr><th>${t("鍵盤")}</th><th class="num">PG</th><th class="num">GR</th><th class="num">GD</th>
-      <th class="num">BD</th><th class="num">PR</th><th class="num" title="${t("空POOR")}">${t("空")}</th><th class="num">${t("レート")}</th><th></th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>${t("鍵盤")}</th><th class="num word">PGREAT</th><th class="num word">GREAT</th><th class="num word">GOOD</th>
+      <th class="num word">BAD</th><th class="num word">POOR</th><th class="num word">${t("空POOR")}</th><th class="num">${t("レート")}</th><th></th></tr></thead>
       <tbody>${lanes.map(laneRow).join("")}</tbody></table></div>
     ${j.measures?.length ? `<h2 style="margin-top:12px">${t("小節ごとのスコアレート")}</h2><div class="chart-box" id="d-measures"></div>` : ""}</div>`;
 }
@@ -1517,7 +1516,7 @@ function unassignedFile(f) {
       <input type="text" placeholder="${t("新しい曲DBの名前 (省略可)")}" style="display:none">
       <button class="primary">${t("取り込む")}</button></div>
     ${f.dbs.length ? `<details class="small" style="margin-top:8px"><summary>${t("取り込まずに、今ある曲DB に入れる (プレイの曲名で見比べる)")}</summary>
-    <div class="table-wrap"><table><thead><tr><th>${t("日時")}</th><th>${t("譜面")}</th><th class="num">EX</th>
+    <div class="table-wrap"><table><thead><tr><th>${t("日時")}</th><th>${t("譜面")}</th><th class="num word">EX SCORE</th>
       ${f.dbs.map((d) => `<th>${esc(d.name)} <span class="dim small">${t("{0}/{1} 曲あり", d.has, f.songs)}</span><br>
         <button data-assign="${f.sha256}" data-db="${d.id}" data-name="${esc(d.name)}">${t("この曲DB にする")}</button></th>`).join("")}</tr></thead><tbody>
     ${f.samples.map((p) => `<tr><td>${fmtDate(p.played_at)}</td>
