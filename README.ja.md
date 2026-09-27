@@ -49,6 +49,8 @@ zip に同梱している、ゲームに読み込ませる DLL。使っている
 - SP☆12: ノマゲ／ハードの「☆12参考表」
   （[スプレッドシート](https://docs.google.com/spreadsheets/d/e/2PACX-1vSUdp6iuEzE8Z5AL1hkoxzLexp89nJnLQMmICm6_MC0_UjCp1ImZFzabcZkvCpK7mcWvm_2t6iYoJRg/pubhtml)）。
   `B+ / A` はノマゲのランク／ハードのランク、`*` は個人差。
+- SP☆11: [SP☆11 wiki](https://w.atwiki.jp/bemani2sp11/) のノマゲ／ハード難易度表（2025-02-22 時点のアーカイブを
+  iidx-difficulty-table-checker.nomadblacky.dev 経由で取得）。表示は☆12と同じ。
 - DP: [DP非公式難易度表](https://zasa.sakura.ne.jp/dp/)（SNJ@KMZS）。
 
 ランクは各表の作者と投票した人たちのもので、このプロジェクトのライセンスの対象ではない。

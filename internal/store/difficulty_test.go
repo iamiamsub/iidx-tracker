@@ -22,8 +22,14 @@ func TestTiers(t *testing.T) {
 	if st.Tiers(12004, 0) != nil {
 		t.Fatal("a chart no table rates has no tier")
 	}
-	if s := TierSources(); s["normal"].Source == "" || s["dp"].Fetched != "2026-09-27" {
+	if r := st.Tiers(1017, 4); r["normal"].Label != "地力A" || r["hard"] != (Tier{"地力S", 9}) { // a ☆11 SPL (the ☆11 tables)
+		t.Fatalf("☆11: %+v", r)
+	}
+	if s := TierSources(12); s["normal"].Source == "" || s["dp"].Fetched != "2026-09-27" {
 		t.Fatalf("sources: %+v", s)
+	}
+	if s := TierSources(11); s["hard"].Source != "https://w.atwiki.jp/bemani2sp11/" || s["dp"].Source == "" {
+		t.Fatalf("☆11 sources: %+v", s)
 	}
 
 	// changes over the snapshot: a rank, a number, no rank, back to the snapshot

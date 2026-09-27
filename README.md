@@ -50,6 +50,8 @@ on 2026-09-27 and built into the tracker (`internal/store/difficulty.json`, matc
 - SP☆12: the normal / hard clear reference tables ("☆12参考表"),
   [spreadsheet](https://docs.google.com/spreadsheets/d/e/2PACX-1vSUdp6iuEzE8Z5AL1hkoxzLexp89nJnLQMmICm6_MC0_UjCp1ImZFzabcZkvCpK7mcWvm_2t6iYoJRg/pubhtml).
   `B+ / A` is the normal clear rank / the hard clear rank; `*` marks a rank of individual difference.
+- SP☆11: the normal / hard clear tables of the [SP☆11 wiki](https://w.atwiki.jp/bemani2sp11/) as archived on 2025-02-22
+  (read through iidx-difficulty-table-checker.nomadblacky.dev); shown the same way.
 - DP: the [DP unofficial difficulty table](https://zasa.sakura.ne.jp/dp/) (SNJ@KMZS).
 
 The ranks are the work of those tables' authors and voters and are not covered by this project's license.

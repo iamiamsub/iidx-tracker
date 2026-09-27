@@ -281,7 +281,7 @@ var migrations = []func(tx *sql.Tx) error{
 			}
 		}
 		return nil
-	},	// 5 -> 6 (2026-09-27): difficulty-table ranks changed in the tracker
+	}, // 5 -> 6 (2026-09-27): difficulty-table ranks changed in the tracker
 	func(tx *sql.Tx) error {
 		_, err := tx.Exec(tierOverridesSchema)
 		return err

@@ -13,8 +13,9 @@ import (
 )
 
 // Difficulty tables, taken once (2026-09-27) and built in: the SP☆12 normal / hard clear reference
-// tables ("☆12参考表", rank F..S+ as 1..10) and the DP unofficial difficulty table (5.9..12.7),
-// matched to music ids by the difficulty-tables tool. The ranks are the work of those tables'
+// tables ("☆12参考表"), the SP☆11 normal / hard clear tables (the atwiki archive of 2025-02-22; rank
+// F..S+ as 1..10 in both) and the DP unofficial difficulty table (5.9..12.7), matched to music ids by
+// the difficulty-tables tool. The ranks are the work of those tables'
 // authors and voters (credited in the README); they apply to the arcade charts, not chart sets.
 // The tiers page changes ranks over the snapshot (tier_overrides).
 //
@@ -34,13 +35,25 @@ type TierSource struct {
 	Fetched string `json:"fetched"`
 }
 
-// TierKinds are the tables by the name the API uses.
-var TierKinds = map[string]string{"sp12_normal": "normal", "sp12_hard": "hard", "dp_normal": "dp"}
+// TierKinds are the tables by the name the API uses: a chart is in the ☆11 or the ☆12 table by its
+// level, so "normal" / "hard" are both.
+var TierKinds = map[string]string{"sp12_normal": "normal", "sp12_hard": "hard", "sp11_normal": "normal", "sp11_hard": "hard", "dp_normal": "dp"}
+
+// tierTable is the table a kind of rank comes from for charts of a level.
+func tierTable(kind string, level int64) string {
+	if kind == "dp" {
+		return "dp_normal"
+	}
+	if level == 11 {
+		return "sp11_" + kind
+	}
+	return "sp12_" + kind
+}
 
 var snapshot struct {
 	once    sync.Once
 	charts  map[chartKey]map[string]Tier
-	sources map[string]TierSource
+	sources map[string]TierSource // by table
 }
 
 func loadSnapshot() {
@@ -59,7 +72,7 @@ func loadSnapshot() {
 		if !ok {
 			continue
 		}
-		snapshot.sources[kind] = t.TierSource
+		snapshot.sources[table] = t.TierSource
 		for _, e := range t.Entries {
 			mid, _ := e[0].(float64)
 			chart, _ := e[1].(float64)
@@ -74,13 +87,19 @@ func loadSnapshot() {
 	}
 }
 
-// TierSources says where each kind of rank comes from.
-func TierSources() map[string]TierSource {
+// TierSources says where each kind of rank comes from for charts of a level.
+func TierSources(level int64) map[string]TierSource {
 	snapshot.once.Do(loadSnapshot)
-	return snapshot.sources
+	out := map[string]TierSource{}
+	for _, kind := range []string{"normal", "hard", "dp"} {
+		if src, ok := snapshot.sources[tierTable(kind, level)]; ok {
+			out[kind] = src
+		}
+	}
+	return out
 }
 
-// Tiers gives a chart's ranks in use: "normal" and "hard" (SP☆12), "dp" (DP); nil when it has none.
+// Tiers gives a chart's ranks in use: "normal" and "hard" (SP☆11 / ☆12), "dp" (DP); nil when it has none.
 func (s *Store) Tiers(music, chart int64) map[string]Tier {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,12 +146,15 @@ func (s *Store) mergeTiers() map[chartKey]map[string]Tier {
 }
 
 // TierRows lists a table's charts of a music database with the snapshot's rank and the one in use:
-// the SP level 12 HYPER..LEGGENDARIA charts for "normal" / "hard", the DP ones of the level for "dp".
+// the SP level 11 or 12 (else) HYPER..LEGGENDARIA charts for "normal" / "hard", the DP ones of the
+// level for "dp".
 func (s *Store) TierRows(kind string, level int64, db any) (map[string]any, error) {
 	charts := []int64{2, 3, 4}
 	switch kind {
 	case "normal", "hard":
-		level = 12
+		if level != 11 {
+			level = 12
+		}
 	case "dp":
 		charts = []int64{7, 8, 9}
 	default:
@@ -163,13 +185,13 @@ func (s *Store) TierRows(kind string, level int64, db any) (map[string]any, erro
 		a, b := rows[i]["music_id"].(int64), rows[j]["music_id"].(int64)
 		return a < b || a == b && rows[i]["chart"].(int64) < rows[j]["chart"].(int64)
 	})
-	return map[string]any{"kind": kind, "level": level, "source": TierSources()[kind], "rows": rows}, nil
+	return map[string]any{"kind": kind, "level": level, "source": TierSources(level)[kind], "rows": rows}, nil
 }
 
 var sp12Rank = regexp.MustCompile(`^(地力|個人差)(F|E|D|C|B\+?|A\+?|S\+?)$`)
 var sp12Ranks = []string{"F", "E", "D", "C", "B", "B+", "A", "A+", "S", "S+"}
 
-// SetTier changes a chart's rank in one table: a label (SP☆12: 地力/個人差 and F..S+; DP: the
+// SetTier changes a chart's rank in one table: a label (SP: 地力/個人差 and F..S+; DP: the
 // number), nil for no rank, or reset to take the change back. It returns the rank now in use.
 func (s *Store) SetTier(kind string, music, chart int64, label *string, reset bool) (any, error) {
 	if _, ok := map[string]bool{"normal": true, "hard": true, "dp": true}[kind]; !ok || chart < 0 || chart > 9 {

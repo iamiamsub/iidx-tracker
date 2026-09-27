@@ -596,7 +596,11 @@ func (s *Store) Chart(key string, db any, music, chart int64, set string) (map[s
 		out["song"] = m
 	}
 	if t := s.Tiers(music, chart); t != nil && set == "" {
-		out["tier"], out["tier_sources"] = t, TierSources()
+		level := int64(12)
+		if m, ok := meta[music]; ok && int(chart) < len(m.Levels) {
+			level = m.Levels[chart]
+		}
+		out["tier"], out["tier_sources"] = t, TierSources(level)
 	}
 	var nc *noteCount
 	if set != "" {

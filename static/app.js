@@ -115,16 +115,16 @@ function djCell(ex, notes) {
 const optionText = (p) => (p.option1 == null ? "-" : p.options === "OFF" ? `<span class="dim">OFF</span>` : esc(p.options));
 const djpText = (v) => (v == null ? "" : (v / 10000).toFixed(2));   // DJ POINT is kept x10000 like the game
 
-// Difficulty-table ranks (built in): SP☆12 "normal" / "hard" reference tables (地力 / 個人差 F..S+),
-// DP "dp" unofficial difficulty. Short form: the rank, * for 個人差.
+// Difficulty-table ranks (built in): SP☆11 / ☆12 "normal" / "hard" tables (地力 / 個人差 F..S+, by the
+// chart's level), DP "dp" unofficial difficulty. Short form: the rank, * for 個人差.
 const tierShort = (label) => (label ?? "").replace(/^地力/, "").replace(/^個人差(.+)$/, "$1*");
 const tierText = (tier) => (!tier ? "" : tier.dp ? tier.dp.label : `${tierShort(tier.normal?.label) || "-"} / ${tierShort(tier.hard?.label) || "-"}`);
-const tierSort = (tier) => (!tier ? null : tier.dp ? tier.dp.value : (tier.normal?.value ?? 0) + (tier.hard?.value ?? 0) / 100);
-const tierDetail = (tier, sources = {}) => {
+const tierSort = (tier, level) => (!tier ? null : tier.dp ? tier.dp.value : level * 100 + (tier.normal?.value ?? 0) + (tier.hard?.value ?? 0) / 100);
+const tierDetail = (tier, sources = {}, level) => {
   const link = (kind, text) => (sources[kind]
     ? `<a href="${esc(sources[kind].source)}" target="_blank" rel="noopener">${esc(text)}</a> (${t("{0} 時点", esc(sources[kind].fetched))})` : esc(text));
   if (tier.dp) return link("dp", `${t("DP非公式難易度")} ${tier.dp.label}`);
-  return link("normal", `${t("☆12参考表")} ${t("ノマゲ")} ${tier.normal?.label ?? "-"}${SEP}${t("ハード")} ${tier.hard?.label ?? "-"}`);
+  return link("normal", `${level == 11 ? t("☆11難易度表 (2025-02)") : t("☆12参考表")} ${t("ノマゲ")} ${tier.normal?.label ?? "-"}${SEP}${t("ハード")} ${tier.hard?.label ?? "-"}`);
 };
 
 // music_play_log folder_type: the music select folder the song was picked from (bm2dx folder ids,
@@ -736,7 +736,7 @@ async function viewSongs(view) {
     </div></div>
     <div class="panel"><div class="table-wrap"><table id="songs"><thead><tr>
       <th><input type="checkbox" id="sel-all"></th>
-      <th class="sort" data-k="level">Lv</th><th class="sort" data-k="tier_sort" title="${t("難易度表のランク: SP☆12 はノマゲ / ハード参考表（* は個人差）、DP は非公式難易度")}">${t("難易度")}</th>
+      <th class="sort" data-k="level">Lv</th><th class="sort" data-k="tier_sort" title="${t("難易度表のランク: SP☆11・☆12 はノマゲ / ハード難易度表（* は個人差）、DP は非公式難易度")}">${t("難易度")}</th>
       <th class="sort" data-k="title">${t("タイトル")}</th><th>${t("譜面")}</th>
       <th class="sort" data-k="best_clear">${t("ランプ")}</th><th class="sort num" data-k="best_ex">EX</th>
       <th class="sort num" data-k="rate">${t("レート")}</th><th>DJ LEVEL</th><th class="sort num" data-k="best_miss">BP</th>
@@ -784,7 +784,7 @@ async function viewSongs(view) {
   if (!tbody.isConnected) return; // moved on meanwhile
   for (const r of rows) {
     r.rate = r.best_ex != null && r.notes ? r.best_ex / (r.notes * 2) : null;
-    r.tier_sort = tierSort(r.tier);
+    r.tier_sort = tierSort(r.tier, r.level);
   }
   const collator = new Intl.Collator("ja");
   const picked = new Set();
@@ -893,7 +893,7 @@ async function viewChart(view, mid, chart) {
       <button id="pick-game" title="${t("tracker_link.dll を入れたゲームが選曲画面にいるとき、この譜面にカーソルを合わせます (サブ画面の予約と同じ動き)")}">${t("ゲームでこの曲を選ぶ")}</button></div>
     <p class="dim">${esc(s ? `${s.artist}${SEP}${s.genre}${SEP}${versionName(s.version)}` : t("曲DB未登録"))}${SEP}ID ${mid}
      ${SEP}${t("ノーツ {0}", notes ?? t("不明"))}${d.notes_source === "observed" ? ` (${t("プレイから推定")})` : ""}${SEP}${esc(playerName(state.player))}</p>
-    ${d.tier ? `<p class="dim small">${tierDetail(d.tier, d.tier_sources)}</p>` : ""}
+    ${d.tier ? `<p class="dim small">${tierDetail(d.tier, d.tier_sources, s?.levels[chart])}</p>` : ""}
     <div class="panel"><div class="stats">
       <div class="stat"><b>${lampBox(best.clear)} ${LAMPS[best.clear]}</b><span>${t("ベストランプ")}</span></div>
       <div class="stat"><b>${best.ex >= 0 ? best.ex : "-"}</b><span>${t("ベストEX")}</span></div>
@@ -1590,11 +1590,11 @@ async function viewTiers(view) {
         src.source ? `<a href="${esc(src.source)}" target="_blank" rel="noopener">${esc(src.name)}</a>, ${esc(src.fetched)}` : "-")}</p>
       <div class="row">
         <select id="tr-kind">
-          <option value="normal"${kind === "normal" ? " selected" : ""}>${t("SP☆12 ノマゲ")}</option>
-          <option value="hard"${kind === "hard" ? " selected" : ""}>${t("SP☆12 ハード")}</option>
+          <option value="normal"${kind === "normal" ? " selected" : ""}>${t("SP ノマゲ")}</option>
+          <option value="hard"${kind === "hard" ? " selected" : ""}>${t("SP ハード")}</option>
           <option value="dp"${kind === "dp" ? " selected" : ""}>${t("DP 非公式難易度")}</option>
         </select>
-        ${kind === "dp" ? `<select id="tr-level">${Array.from({length: 12}, (_, i) => 12 - i).map((l) => `<option value="${l}"${String(l) === level ? " selected" : ""}>☆${l}</option>`).join("")}</select>` : ""}
+        <select id="tr-level">${(kind === "dp" ? Array.from({length: 12}, (_, i) => 12 - i) : [12, 11]).map((l) => `<option value="${l}"${l === d.level ? " selected" : ""}>☆${l}</option>`).join("")}</select>
         <input id="tr-q" placeholder="${t("曲名で絞り込み")}">
         <label><input type="checkbox" id="tr-changed"> ${t("変えたものだけ")}</label>
         <label><input type="checkbox" id="tr-none"> ${t("ランクの無いものだけ")}</label>
