@@ -3,6 +3,7 @@ package store
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"math"
 	"regexp"
 	"sort"
@@ -12,11 +13,12 @@ import (
 	"iidx-tracker/internal/i18n"
 )
 
-// Difficulty tables, taken once (2026-09-27) and built in: the SP☆12 normal / hard clear reference
-// tables ("☆12参考表"), the SP☆11 normal / hard clear tables (2026-09-16; rank F..S+ as 1..10 in
-// both, ☆11 has no + ranks) and the DP unofficial difficulty table (5.9..12.7), matched to music ids by
-// the difficulty-tables tool. The ranks are the work of those tables'
-// authors and voters (credited in the README); they apply to the arcade charts, not chart sets.
+// Difficulty tables, taken once (2026-09-27) and built in: SP tables sp<level>_<normal|hard> (the
+// SP☆12 reference tables "☆12参考表", the SP☆11 tables of 2026-09-16, the SP☆10 / ☆9 normal-clear-or-
+// under table of 2026-09-05, the SP☆10 hard table of 2025-03-06; ranks F- 0, F 1 .. S+ 10, not every
+// table has every rank) and the DP unofficial difficulty table (5.9..12.7), matched to music ids by
+// the difficulty-tables tool. The ranks are the work of those tables' authors and voters (credited in
+// the README); they apply to the arcade charts, not chart sets.
 // The tiers page changes ranks over the snapshot (tier_overrides).
 //
 //go:embed difficulty.json
@@ -35,19 +37,16 @@ type TierSource struct {
 	Fetched string `json:"fetched"`
 }
 
-// TierKinds are the tables by the name the API uses: a chart is in the ☆11 or the ☆12 table by its
-// level, so "normal" / "hard" are both.
-var TierKinds = map[string]string{"sp12_normal": "normal", "sp12_hard": "hard", "sp11_normal": "normal", "sp11_hard": "hard", "dp_normal": "dp"}
+// tierKind is the kind of rank a table gives, by the name the API uses: a chart is in the SP table of
+// its level, so "normal" / "hard" are each several tables.
+var tierKind = regexp.MustCompile(`^(?:sp(?:9|1[012])_(normal|hard)|dp_normal)$`)
 
 // tierTable is the table a kind of rank comes from for charts of a level.
 func tierTable(kind string, level int64) string {
 	if kind == "dp" {
 		return "dp_normal"
 	}
-	if level == 11 {
-		return "sp11_" + kind
-	}
-	return "sp12_" + kind
+	return fmt.Sprintf("sp%d_%s", level, kind)
 }
 
 var snapshot struct {
@@ -68,9 +67,13 @@ func loadSnapshot() {
 		return
 	}
 	for table, t := range data.Tables {
-		kind, ok := TierKinds[table]
-		if !ok {
+		m := tierKind.FindStringSubmatch(table)
+		if m == nil {
 			continue
+		}
+		kind := m[1]
+		if kind == "" {
+			kind = "dp"
 		}
 		snapshot.sources[table] = t.TierSource
 		for _, e := range t.Entries {
@@ -146,13 +149,13 @@ func (s *Store) mergeTiers() map[chartKey]map[string]Tier {
 }
 
 // TierRows lists a table's charts of a music database with the snapshot's rank and the one in use:
-// the SP level 11 or 12 (else) HYPER..LEGGENDARIA charts for "normal" / "hard", the DP ones of the
+// the SP level 9 .. 12 (else 12) HYPER..LEGGENDARIA charts for "normal" / "hard", the DP ones of the
 // level for "dp".
 func (s *Store) TierRows(kind string, level int64, db any) (map[string]any, error) {
 	charts := []int64{2, 3, 4}
 	switch kind {
 	case "normal", "hard":
-		if level != 11 {
+		if level < 9 || level > 12 {
 			level = 12
 		}
 	case "dp":
@@ -188,10 +191,10 @@ func (s *Store) TierRows(kind string, level int64, db any) (map[string]any, erro
 	return map[string]any{"kind": kind, "level": level, "source": TierSources(level)[kind], "rows": rows}, nil
 }
 
-var sp12Rank = regexp.MustCompile(`^(地力|個人差)(F|E|D|C|B\+?|A\+?|S\+?)$`)
-var sp12Ranks = []string{"F", "E", "D", "C", "B", "B+", "A", "A+", "S", "S+"}
+var spRank = regexp.MustCompile(`^(地力|個人差)(F-?|E|D|C|B\+?|A\+?|S\+?)$`)
+var spRanks = []string{"F-", "F", "E", "D", "C", "B", "B+", "A", "A+", "S", "S+"} // value = index
 
-// SetTier changes a chart's rank in one table: a label (SP: 地力/個人差 and F..S+; DP: the
+// SetTier changes a chart's rank in one table: a label (SP: 地力/個人差 and F-..S+; DP: the
 // number), nil for no rank, or reset to take the change back. It returns the rank now in use.
 func (s *Store) SetTier(kind string, music, chart int64, label *string, reset bool) (any, error) {
 	if _, ok := map[string]bool{"normal": true, "hard": true, "dp": true}[kind]; !ok || chart < 0 || chart > 9 {
@@ -211,13 +214,13 @@ func (s *Store) SetTier(kind string, music, chart int64, label *string, reset bo
 				v = math.Round(v*10) / 10
 				text, value = strconv.FormatFloat(v, 'f', 1, 64), v
 			} else {
-				m := sp12Rank.FindStringSubmatch(*label)
+				m := spRank.FindStringSubmatch(*label)
 				if m == nil {
-					return nil, i18n.New("ランクは 地力/個人差 と F〜S+ で入れてください", "enter the rank as 地力/個人差 and F to S+")
+					return nil, i18n.New("ランクは 地力/個人差 と F-〜S+ で入れてください", "enter the rank as 地力/個人差 and F- to S+")
 				}
-				for i, r := range sp12Ranks {
+				for i, r := range spRanks {
 					if r == m[2] {
-						value = float64(i + 1)
+						value = float64(i)
 					}
 				}
 				text = m[0]

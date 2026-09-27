@@ -25,6 +25,15 @@ func TestTiers(t *testing.T) {
 	if r := st.Tiers(1017, 4); r["normal"].Label != "地力A" || r["hard"] != (Tier{"地力S", 9}) { // a ☆11 SPL (the ☆11 tables)
 		t.Fatalf("☆11: %+v", r)
 	}
+	if r := st.Tiers(3013, 2); r["normal"] != (Tier{"個人差A+", 8}) || r["hard"] != (Tier{"地力S", 9}) { // a ☆10 SPH (two ☆10 tables)
+		t.Fatalf("☆10: %+v", r)
+	}
+	if r := st.Tiers(13000, 2); r["normal"] != (Tier{"地力F-", 0}) { // F- is 0
+		t.Fatalf("☆10 F-: %+v", r)
+	}
+	if s := TierSources(10); s["normal"].Source == s["hard"].Source || s["hard"].Source == "" {
+		t.Fatalf("☆10 sources: %+v", s)
+	}
 	if s := TierSources(12); s["normal"].Source == "" || s["dp"].Fetched != "2026-09-27" {
 		t.Fatalf("sources: %+v", s)
 	}
@@ -52,7 +61,10 @@ func TestTiers(t *testing.T) {
 	if cur, _ := st.SetTier("hard", 99999, 3, label("地力B"), false); cur != "地力B" { // a chart the snapshot has not got
 		t.Fatalf("new: %v", cur)
 	}
-	for _, bad := range []struct{ kind, label string }{{"hard", "地力Z"}, {"dp", "99"}, {"nope", "地力A"}} {
+	if cur, _ := st.SetTier("normal", 12004, 3, label("個人差F-"), false); cur != "個人差F-" || st.Tiers(12004, 3)["normal"].Value != 0 {
+		t.Fatalf("F-: %v", cur)
+	}
+	for _, bad := range []struct{ kind, label string }{{"hard", "地力Z"}, {"hard", "地力S-"}, {"dp", "99"}, {"nope", "地力A"}} {
 		if _, err := st.SetTier(bad.kind, 12004, 3, label(bad.label), false); err == nil {
 			t.Fatalf("accepted %+v", bad)
 		}

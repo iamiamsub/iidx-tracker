@@ -51,6 +51,8 @@ zip に同梱している、ゲームに読み込ませる DLL。使っている
   `B+ / A` はノマゲのランク／ハードのランク、`*` は個人差。
 - SP☆11: ノマゲ／ハードの[難易度表](https://docs.google.com/spreadsheets/d/1-6Z5lfhFnRdmnrz65ulYTUgfHINgnJ90SMSPMLH2TJc/)
   （2026-09-16 版。有志が playlister 用に作ったカテゴリーリストから取得）。表示は☆12と同じ。
+- SP☆10・☆9: [☆9,10ノマゲ以下難易度表](https://docs.google.com/spreadsheets/d/11ugU51yM8iu-8-62JO0exOwozz4HKIf8g4BIAuHEq0g/)（2026-09-05 版、@035sk_o）。
+  ☆10 のハードは [SP☆10 ハード難易度表(仮)](https://scrapbox.io/SP10HardTable/SP_Lv10_HardTable)（2025-03-06 版、全体の 4 分の 1 ほど）。
 - DP: [DP非公式難易度表](https://zasa.sakura.ne.jp/dp/)（SNJ@KMZS）。
 
 ランクは各表の作者と投票した人たちのもので、このプロジェクトのライセンスの対象ではない。

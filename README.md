@@ -52,6 +52,9 @@ on 2026-09-27 and built into the tracker (`internal/store/difficulty.json`, matc
   `B+ / A` is the normal clear rank / the hard clear rank; `*` marks a rank of individual difference.
 - SP☆11: the normal / hard clear [difficulty table](https://docs.google.com/spreadsheets/d/1-6Z5lfhFnRdmnrz65ulYTUgfHINgnJ90SMSPMLH2TJc/)
   (2026-09-16), taken from the playlister category lists a player made of it; shown the same way.
+- SP☆10 / ☆9: the [normal-clear-or-under difficulty table](https://docs.google.com/spreadsheets/d/11ugU51yM8iu-8-62JO0exOwozz4HKIf8g4BIAuHEq0g/)
+  (2026-09-05, @035sk_o) and, for ☆10 hard clears, the [SP☆10 hard table (tentative)](https://scrapbox.io/SP10HardTable/SP_Lv10_HardTable)
+  (2025-03-06, about a quarter of the charts).
 - DP: the [DP unofficial difficulty table](https://zasa.sakura.ne.jp/dp/) (SNJ@KMZS).
 
 The ranks are the work of those tables' authors and voters and are not covered by this project's license.
