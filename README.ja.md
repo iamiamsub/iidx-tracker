@@ -41,6 +41,18 @@ zip に同梱している、ゲームに読み込ませる DLL。使っている
 2dxtra はこれらをサーバーに送らないので、tracker_link.dll がカードアウト時にまとめて送り、トラッカーは通常の譜面とは別に集計する。
 **曲DB** 画面で `2dxtra.sqlite` を取り込むとセットごとの譜面が一覧に出るので、曲一覧で譜面セットを選んで見る。
 
+## 難易度表
+
+曲一覧と譜面の画面に、有志の難易度表でのランクを出す。2026-09-27 に取得してゲームの曲 ID に対応付けたものを
+トラッカーに組み込んでいる（`internal/store/difficulty.json`）。
+
+- SP☆12: ノマゲ／ハードの「☆12参考表」
+  （[スプレッドシート](https://docs.google.com/spreadsheets/d/e/2PACX-1vSUdp6iuEzE8Z5AL1hkoxzLexp89nJnLQMmICm6_MC0_UjCp1ImZFzabcZkvCpK7mcWvm_2t6iYoJRg/pubhtml)）。
+  `B+ / A` はノマゲのランク／ハードのランク、`*` は個人差。
+- DP: [DP非公式難易度表](https://zasa.sakura.ne.jp/dp/)（SNJ@KMZS）。
+
+ランクは各表の作者と投票した人たちのもので、このプロジェクトのライセンスの対象ではない。
+
 ## ビルド
 
 - トラッカー: Go 1.26 以降で `go build`

@@ -42,6 +42,18 @@ With [2dxtra](https://github.com/aixxe/2dxtra) loaded as well, plays on the char
 recorded too: 2dxtra keeps them from the server, so tracker_link.dll sends them when the card goes out, and the tracker counts them apart
 from the game's charts. Import `2dxtra.sqlite` on the **Music DB** page to list each set's charts, then pick the set in the song list.
 
+## Difficulty tables
+
+The song list and the chart pages show each chart's rank in the players' difficulty tables, from a snapshot taken
+on 2026-09-27 and built into the tracker (`internal/store/difficulty.json`, matched to the game's music ids):
+
+- SP☆12: the normal / hard clear reference tables ("☆12参考表"),
+  [spreadsheet](https://docs.google.com/spreadsheets/d/e/2PACX-1vSUdp6iuEzE8Z5AL1hkoxzLexp89nJnLQMmICm6_MC0_UjCp1ImZFzabcZkvCpK7mcWvm_2t6iYoJRg/pubhtml).
+  `B+ / A` is the normal clear rank / the hard clear rank; `*` marks a rank of individual difference.
+- DP: the [DP unofficial difficulty table](https://zasa.sakura.ne.jp/dp/) (SNJ@KMZS).
+
+The ranks are the work of those tables' authors and voters and are not covered by this project's license.
+
 ## Building
 
 - Tracker: `go build` with Go 1.26 or later

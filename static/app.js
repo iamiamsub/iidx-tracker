@@ -115,6 +115,18 @@ function djCell(ex, notes) {
 const optionText = (p) => (p.option1 == null ? "-" : p.options === "OFF" ? `<span class="dim">OFF</span>` : esc(p.options));
 const djpText = (v) => (v == null ? "" : (v / 10000).toFixed(2));   // DJ POINT is kept x10000 like the game
 
+// Difficulty-table ranks (built in): SP☆12 "normal" / "hard" reference tables (地力 / 個人差 F..S+),
+// DP "dp" unofficial difficulty. Short form: the rank, * for 個人差.
+const tierShort = (label) => (label ?? "").replace(/^地力/, "").replace(/^個人差(.+)$/, "$1*");
+const tierText = (tier) => (!tier ? "" : tier.dp ? tier.dp.label : `${tierShort(tier.normal?.label) || "-"} / ${tierShort(tier.hard?.label) || "-"}`);
+const tierSort = (tier) => (!tier ? null : tier.dp ? tier.dp.value : (tier.normal?.value ?? 0) + (tier.hard?.value ?? 0) / 100);
+const tierDetail = (tier, sources = {}) => {
+  const link = (kind, text) => (sources[kind]
+    ? `<a href="${esc(sources[kind].source)}" target="_blank" rel="noopener">${esc(text)}</a> (${t("{0} 時点", esc(sources[kind].fetched))})` : esc(text));
+  if (tier.dp) return link("dp", `${t("DP非公式難易度")} ${tier.dp.label}`);
+  return link("normal", `${t("☆12参考表")} ${t("ノマゲ")} ${tier.normal?.label ?? "-"}${SEP}${t("ハード")} ${tier.hard?.label ?? "-"}`);
+};
+
 // music_play_log folder_type: the music select folder the song was picked from (bm2dx folder ids,
 // analysis_0819 musicdata.md 4.4). In 段位認定 it is the course number instead.
 function folderName(f, mode) {
@@ -723,7 +735,8 @@ async function viewSongs(view) {
     </div></div>
     <div class="panel"><div class="table-wrap"><table id="songs"><thead><tr>
       <th><input type="checkbox" id="sel-all"></th>
-      <th class="sort" data-k="level">Lv</th><th class="sort" data-k="title">${t("タイトル")}</th><th>${t("譜面")}</th>
+      <th class="sort" data-k="level">Lv</th><th class="sort" data-k="tier_sort" title="${t("難易度表のランク: SP☆12 はノマゲ / ハード参考表（* は個人差）、DP は非公式難易度")}">${t("難易度")}</th>
+      <th class="sort" data-k="title">${t("タイトル")}</th><th>${t("譜面")}</th>
       <th class="sort" data-k="best_clear">${t("ランプ")}</th><th class="sort num" data-k="best_ex">EX</th>
       <th class="sort num" data-k="rate">${t("レート")}</th><th>DJ LEVEL</th><th class="sort num" data-k="best_miss">BP</th>
       <th class="sort num" data-k="djpoint" title="${t("DJ POINT (ベストEX・ベストランプ・DJ LEVEL から計算)")}">DJP</th>
@@ -768,7 +781,10 @@ async function viewSongs(view) {
   const tbody = $("#songs tbody");
   const rows = await songs;
   if (!tbody.isConnected) return; // moved on meanwhile
-  for (const r of rows) r.rate = r.best_ex != null && r.notes ? r.best_ex / (r.notes * 2) : null;
+  for (const r of rows) {
+    r.rate = r.best_ex != null && r.notes ? r.best_ex / (r.notes * 2) : null;
+    r.tier_sort = tierSort(r.tier);
+  }
   const collator = new Intl.Collator("ja");
   const picked = new Set();
   let sortKey = localStorage.getItem("songs.sort") || "title", sortDir = 1, list = [], rowH = 0, shown = "";
@@ -776,6 +792,7 @@ async function viewSongs(view) {
       <tr class="click" data-href="${chartHref(r.music_id, r.chart, set)}">
         <td><input type="checkbox" class="sel" value="${r.music_id}"${picked.has(r.music_id) ? " checked" : ""}></td>
         <td class="num">${r.level}</td>
+        <td class="small nowrap">${esc(tierText(r.tier))}</td>
         <td class="title">${esc(r.title ?? `#${r.music_id}`)}<div class="dim small">${esc(r.artist ?? "")}</div></td>
         <td>${r.charts ? chips(r) : chartTag(r.chart)}</td>
         <td>${lampBox(r.best_clear)}</td>
@@ -786,7 +803,7 @@ async function viewSongs(view) {
         <td class="num">${r.plays ?? ""}</td>
         <td class="small">${esc(versionName(r.version))}</td>
         <td class="small">${r.last_played ? fmtDate(r.last_played, false) : ""}</td></tr>`;
-  const pad = (n) => (n > 0 ? `<tr class="pad" style="height:${n * rowH}px"><td colspan="13"></td></tr>` : "");
+  const pad = (n) => (n > 0 ? `<tr class="pad" style="height:${n * rowH}px"><td colspan="14"></td></tr>` : "");
   // Only the rows near the screen are in the page, the rest is blank space of the same height:
   // thousands of rows take the browser seconds to lay out.
   const paint = (force) => {
@@ -875,6 +892,7 @@ async function viewChart(view, mid, chart) {
       <button id="pick-game" title="${t("tracker_link.dll を入れたゲームが選曲画面にいるとき、この譜面にカーソルを合わせます (サブ画面の予約と同じ動き)")}">${t("ゲームでこの曲を選ぶ")}</button></div>
     <p class="dim">${esc(s ? `${s.artist}${SEP}${s.genre}${SEP}${versionName(s.version)}` : t("曲DB未登録"))}${SEP}ID ${mid}
      ${SEP}${t("ノーツ {0}", notes ?? t("不明"))}${d.notes_source === "observed" ? ` (${t("プレイから推定")})` : ""}${SEP}${esc(playerName(state.player))}</p>
+    ${d.tier ? `<p class="dim small">${tierDetail(d.tier, d.tier_sources)}</p>` : ""}
     <div class="panel"><div class="stats">
       <div class="stat"><b>${lampBox(best.clear)} ${LAMPS[best.clear]}</b><span>${t("ベストランプ")}</span></div>
       <div class="stat"><b>${best.ex >= 0 ? best.ex : "-"}</b><span>${t("ベストEX")}</span></div>
