@@ -441,6 +441,8 @@ function hashParams() {
 async function render() {
   $("#top").classList.remove("open"); // the phone menu closes on every page change
   $("#menu-btn").setAttribute("aria-expanded", false);
+  // the header lists every time: a card, music database or chart set may have come since the page was opened
+  await loadPlayers().catch((e) => toast(e.message));
   const hash = location.hash || "#/";
   const base = hash.split("?")[0];
   if (base !== render.last) window.scrollTo(0, 0);
@@ -466,7 +468,12 @@ async function render() {
 
 async function loadPlayers() {
   state.players = await api("/api/players");
-  if (!state.players.some((p) => p.key === state.player)) state.player = state.players[0]?.key || "";
+  if (!state.players.some((p) => p.key === state.player)) {
+    // plays kept without a card move to the card at its login: stay with that person
+    const same = state.players.find((p) => state.player === `iidx:${p.profile?.iidx_id}`);
+    if (same) setPlayer(same.key);
+    else state.player = state.players[0]?.key || "";
+  }
   const sel = $("#player");
   sel.innerHTML = state.players.length
     ? state.players.map((p) => `<option value="${esc(p.key)}">${esc(playerName(p.key))}</option>`).join("")
@@ -1715,4 +1722,4 @@ $("#lang").addEventListener("change", (e) => {
   location.reload();
 });
 window.addEventListener("hashchange", render);
-loadPlayers().catch((e) => toast(e.message)).finally(render);
+render();

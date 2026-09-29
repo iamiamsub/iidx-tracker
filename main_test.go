@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -674,6 +675,18 @@ func TestTrackerLink(t *testing.T) {
 	if strings.Contains(relayed, "tracker_link") || !strings.Contains(relayed, `method="reg"`) ||
 		!strings.Contains(relayed, `method="get"`) {
 		t.Fatal(relayed)
+	}
+}
+
+// The header's player / music database / chart set across page changes (testdata/ui_test.mjs runs
+// static/app.js in node with a fake page and server).
+func TestUIHeader(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found")
+	}
+	if out, err := exec.Command(node, filepath.Join("testdata", "ui_test.mjs"), "static").CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
 	}
 }
 
