@@ -459,6 +459,74 @@ func TestMusicDBClear(t *testing.T) {
 	}
 }
 
+// Taking back the newest import keeps the plays recorded on its file in the music database, titled
+// from the imports that remain; deleting the database sends them back to wait for one.
+func TestDeleteKeepsPlays(t *testing.T) {
+	tmp := t.TempDir()
+	config := defaultConfig()
+	config["db_path"] = filepath.Join(tmp, "t.db")
+	static, _ := fs.Sub(embedded, "static")
+	app, err := newApp(filepath.Join(tmp, "config.json"), config, tmp, static)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.store.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+	st := app.store
+	res, err := st.ImportMusicDB("music_omni.bin", mdb33(18032), "new", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := res["musicdb_id"]
+	newer := mdb33(18032, 33001)
+	if _, err := st.ImportMusicDB("music_omni.bin", newer, fmt.Sprint(db), ""); err != nil {
+		t.Fatal(err)
+	}
+	sha := fmt.Sprintf("%x", sha256.Sum256(newer))
+	for _, q := range []string{
+		"INSERT INTO machines (pcbid, musicdb_id, sha256) VALUES ('P', ?, ?)",
+		"INSERT INTO plays (card_id, music_id, chart, played_at, omni, game_version, musicdb_id, music_hash) VALUES ('C', 18032, 3, 1, 1, 33, ?, ?)",
+		"INSERT INTO sessions (card_id, started_at, omni, game_version, musicdb_id, music_hash) VALUES ('C', 1, 1, 33, ?, ?)",
+	} {
+		if _, err := st.Exec(q, db, sha); err != nil {
+			t.Fatal(err)
+		}
+	}
+	post := func(body string) {
+		resp, err := http.Post(web.URL+"/api/musicdb/update", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatal(body, resp.StatusCode)
+		}
+	}
+	dbs := func() string {
+		var out []string
+		for _, table := range []string{"plays", "sessions", "machines"} {
+			r, _ := st.Row("SELECT musicdb_id FROM " + table)
+			out = append(out, fmt.Sprint(r["musicdb_id"]))
+		}
+		return strings.Join(out, " ")
+	}
+
+	last, _ := st.Row("SELECT MAX(id) AS id FROM musicdb_imports")
+	post(fmt.Sprintf(`{"id": %d, "delete_import": %d}`, db, last["id"]))
+	if want := strings.Repeat(fmt.Sprint(db)+" ", 3); dbs() != want[:len(want)-1] {
+		t.Fatal("plays, sessions, machines left the database:", dbs())
+	}
+	if plays, err := st.PlaysFor("1", nil, ""); err != nil || len(plays) != 1 || plays[0]["title"] != "Song" {
+		t.Fatal("no title from the import that remains:", plays, err)
+	}
+
+	post(fmt.Sprintf(`{"id": %d, "delete": true}`, db))
+	if dbs() != "<nil> <nil> <nil>" {
+		t.Fatal("still on the deleted database:", dbs())
+	}
+}
+
 // The song page's "pick in the game": tracker_link.dll's poll from the music select takes the song.
 func TestPickSong(t *testing.T) {
 	up := fakeServer(t)

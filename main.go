@@ -795,12 +795,12 @@ func apiMusicDBUpdate(a *App, _ url.Values, raw []byte) (any, error) {
 			"DELETE FROM import_songs WHERE import_id IN (SELECT id FROM musicdb_imports WHERE musicdb_id = ?)",
 			"DELETE FROM musicdb_imports WHERE musicdb_id = ?",
 			"DELETE FROM chart_notes_db WHERE musicdb_id = ?", "DELETE FROM sound_scans WHERE musicdb_id = ?",
-			"UPDATE music_files SET musicdb_id = NULL WHERE musicdb_id = ?", "DELETE FROM musicdbs WHERE id = ?"} {
+			"DELETE FROM musicdbs WHERE id = ?"} {
 			if _, err := a.store.Exec(q, id); err != nil {
 				return nil, err
 			}
 		}
-		return map[string]any{"ok": true}, nil
+		return map[string]any{"ok": true}, a.store.ReleaseDeletedDBs()
 	}
 	// one kind of what was imported into the database; the database and the plays stay
 	if what := str(b["clear"]); what != "" {

@@ -200,6 +200,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := releaseDeletedDBs(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db, active: map[sessionKey]int64{}, meta: map[string]map[int64]SongMeta{}}, nil
 }
 
@@ -431,6 +435,31 @@ func upgradeLegacy(db *sql.DB) error {
 	}
 	return nil
 }
+
+// releaseDeletedDBs lets go of music databases that were deleted: files, cabinets, plays and logins
+// that still name one take the database their music data file is assigned to, or wait for one;
+// rows without a file, and server bests, take the one that fits (assignUnknownDBs). Run after a
+// database is deleted and at every start (databases deleted before 2026-10-18 kept these rows).
+func releaseDeletedDBs(db interface {
+	Exec(string, ...any) (sql.Result, error)
+}) error {
+	const gone = " WHERE musicdb_id NOT IN (SELECT id FROM musicdbs)"
+	for _, q := range []string{
+		"UPDATE music_files SET musicdb_id = NULL" + gone,
+		"UPDATE machines SET musicdb_id = (SELECT f.musicdb_id FROM music_files f WHERE f.sha256 = machines.sha256)" + gone,
+		"UPDATE plays SET musicdb_id = (SELECT f.musicdb_id FROM music_files f WHERE f.sha256 = plays.music_hash)" + gone,
+		"UPDATE sessions SET musicdb_id = (SELECT f.musicdb_id FROM music_files f WHERE f.sha256 = sessions.music_hash)" + gone,
+		"UPDATE server_bests SET musicdb_id = NULL" + gone,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			return err
+		}
+	}
+	return assignUnknownDBs(db)
+}
+
+// ReleaseDeletedDBs: see releaseDeletedDBs.
+func (s *Store) ReleaseDeletedDBs() error { return releaseDeletedDBs(s.db) }
 
 // assignUnknownDBs gives rows recorded without a known music database the one that fits them:
 // the newest lineage of the play's kind (omnimix or not) and game version; server bests take the
@@ -1198,17 +1227,18 @@ func applyImport(tx *sql.Tx, db, imp any) (added, removed int, err error) {
 }
 
 // DeleteImport takes back one import of a music database: its songs are rebuilt from the imports
-// that remain. When no import of the database carries the file any more, the file is no longer the
-// database's: cabinets reporting it and the plays recorded on it wait to be assigned again.
+// that remain. The file stays the database's, as one assigned to it without an import: cabinets
+// reporting it and the plays recorded on it keep the database and take their titles from the songs
+// that remain. Importing the file into another database moves them there.
 func (s *Store) DeleteImport(id any) error {
-	r, err := s.Row("SELECT musicdb_id, sha256 FROM musicdb_imports WHERE id = ?", id)
+	r, err := s.Row("SELECT musicdb_id FROM musicdb_imports WHERE id = ?", id)
 	if err != nil {
 		return err
 	}
 	if r == nil {
 		return i18n.New("指定された取り込みがありません", "No such import")
 	}
-	db, sha := r["musicdb_id"], r["sha256"]
+	db := r["musicdb_id"]
 	err = s.tx(func(tx *sql.Tx) error {
 		for _, q := range []string{"DELETE FROM import_songs WHERE import_id = ?", "DELETE FROM musicdb_imports WHERE id = ?"} {
 			if _, err := tx.Exec(q, id); err != nil {
@@ -1224,19 +1254,6 @@ func (s *Store) DeleteImport(id any) error {
 		}
 		for _, imp := range imports {
 			if _, _, err := applyImport(tx, db, imp["id"]); err != nil {
-				return err
-			}
-		}
-		if still, err := rowsOf(tx, "SELECT 1 FROM musicdb_imports WHERE musicdb_id = ? AND sha256 = ?", db, sha); err != nil || len(still) > 0 {
-			return err
-		}
-		for _, q := range []string{
-			"UPDATE music_files SET musicdb_id = NULL WHERE sha256 = ? AND musicdb_id = ?",
-			"UPDATE machines SET musicdb_id = NULL WHERE sha256 = ? AND musicdb_id = ?",
-			"UPDATE plays SET musicdb_id = NULL WHERE music_hash = ? AND musicdb_id = ?",
-			"UPDATE sessions SET musicdb_id = NULL WHERE music_hash = ? AND musicdb_id = ?",
-		} {
-			if _, err := tx.Exec(q, sha, db); err != nil {
 				return err
 			}
 		}
