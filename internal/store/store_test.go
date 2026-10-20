@@ -478,6 +478,59 @@ func TestSharedSongs(t *testing.T) {
 	}
 }
 
+// A version that numbers a song anew (34: the INFINITAS songs 33316- became 34316-) keeps what was
+// recorded under the old number with the song; taking the import back returns it to the old number.
+func TestRenumberedSong(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	levels := []int{0, 3, 7, 10, 0, 0, 3, 7, 10, 0}
+	stay := [4]any{18032, 18, "Stay my side", levels}
+	om, _ := st.ImportMusicDB("music_omni.bin", makeMDB([][4]any{stay, {33327, 80, "Din Don Dan", levels}}), "new", "")
+	db := om["musicdb_id"]
+	if _, err := st.Exec("INSERT INTO plays (card_id, music_id, chart, ex_score, musicdb_id, game_version, played_at) "+
+		"VALUES ('C1', 33327, 3, 2150, ?, 33, 1), ('C1', 18032, 3, 900, ?, 33, 2)", db, db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Exec("INSERT INTO server_bests (card_id, upstream, iidx_id, music_id, chart, ex_score, musicdb_id) "+
+		"VALUES ('C1', 'u', 1, 33327, 2, 1000, ?)", db); err != nil {
+		t.Fatal(err)
+	}
+	check := func(music int64) {
+		t.Helper()
+		bests, err := st.bests("C1", db, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[chartKey]int64{}
+		for k, b := range bests {
+			got[k] = *b.ex
+		}
+		if want := map[chartKey]int64{{music, 3}: 2150, {music, 2}: 1000, {18032, 3}: 900}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("bests %v, want %v", got, want)
+		}
+		page, err := st.Chart("C1", db, music, 3, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plays := page["plays"].([]Row); len(plays) != 1 || plays[0]["music_id"] != music || plays[0]["title"] != "Din Don Dan" {
+			t.Fatalf("chart page plays %v", plays)
+		}
+	}
+	check(33327)
+	if _, err := st.ImportMusicDB("music_omni.bin", makeMDB([][4]any{stay, {34327, 80, "Din Don Dan", levels}}), str(db), ""); err != nil {
+		t.Fatal(err)
+	}
+	check(34327)
+	last, _ := st.Row("SELECT MAX(id) AS id FROM musicdb_imports WHERE musicdb_id = ?", db)
+	if err := st.DeleteImport(last["id"]); err != nil {
+		t.Fatal(err)
+	}
+	check(33327)
+}
+
 func TestLinkInts(t *testing.T) {
 	b := make([]byte, 22*4)
 	binary.LittleEndian.PutUint32(b[4*4:], 1643)                    // side 0 PGREAT

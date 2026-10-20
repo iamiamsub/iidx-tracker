@@ -288,6 +288,15 @@ func inDB(table string, db any) (string, []any) {
 			AND json_extract(d.levels, '$[' || %[1]s.chart || ']') > 0))`, table), []any{db, db}
 }
 
+// songID is table's music_id, or, for a song its music database dropped, the one song with the same
+// title and artist the database has now: a version that numbers songs anew (34 gave the songs 33 had
+// ahead of it and the INFINITAS songs their own numbers) keeps what was recorded under the old number.
+func songID(table string) string {
+	return fmt.Sprintf(`COALESCE((SELECT CASE WHEN COUNT(*) = 1 THEN MAX(n.music_id) END FROM songs o
+		JOIN songs n ON n.musicdb_id = o.musicdb_id AND n.removed = 0 AND n.title = o.title AND n.artist = o.artist
+		WHERE o.musicdb_id = %[1]s.musicdb_id AND o.music_id = %[1]s.music_id AND o.removed = 1), %[1]s.music_id)`, table)
+}
+
 // bests: best per chart of music database db from recorded plays, merged with the server's bests
 // (getrank). set: a 2dxtra chart set, whose plays are kept apart ("" = the game's charts).
 func (s *Store) bests(key string, db any, set string) (map[chartKey]*best, error) {
@@ -295,10 +304,10 @@ func (s *Store) bests(key string, db any, set string) (map[chartKey]*best, error
 	pdb, pdbArgs := inDB("plays", db)
 	sw, sa := setWhere(set)
 	pw, pa := who+" AND "+pdb+" AND "+sw, append(append(append([]any{}, whoArgs...), pdbArgs...), sa...)
-	rows, err := s.Rows("SELECT music_id, chart, MAX(ex_score) AS best_ex, MAX(clear) AS best_clear, "+
+	rows, err := s.Rows("SELECT "+songID("plays")+" AS music_id, chart, MAX(ex_score) AS best_ex, MAX(clear) AS best_clear, "+
 		"MIN(CASE WHEN miss_count >= 0 THEN miss_count END) AS best_miss, "+
 		"COUNT(*) AS plays, MAX(played_at) AS last_played, MAX(level) AS level "+
-		"FROM plays WHERE "+pw+" GROUP BY music_id, chart", pa...)
+		"FROM plays WHERE "+pw+" GROUP BY 1, 2", pa...)
 	if err != nil {
 		return nil, err
 	}
@@ -312,8 +321,8 @@ func (s *Store) bests(key string, db any, set string) (map[chartKey]*best, error
 	var server []Row
 	if set == "" {
 		sdb, sdbArgs := inDB("server_bests", db)
-		if server, err = s.Rows("SELECT music_id, chart, MAX(ex_score) AS ex, MAX(clear) AS clear, "+
-			"MIN(miss_count) AS miss FROM server_bests WHERE "+who+" AND "+sdb+" GROUP BY music_id, chart",
+		if server, err = s.Rows("SELECT "+songID("server_bests")+" AS music_id, chart, MAX(ex_score) AS ex, MAX(clear) AS clear, "+
+			"MIN(miss_count) AS miss FROM server_bests WHERE "+who+" AND "+sdb+" GROUP BY 1, 2",
 			append(append([]any{}, whoArgs...), sdbArgs...)...); err != nil {
 			return nil, err
 		}
@@ -341,7 +350,7 @@ func (s *Store) bests(key string, db any, set string) (map[chartKey]*best, error
 		}
 	}
 	// the DJ LEVEL the game reported for the best EX, for charts whose note count is unknown
-	lv, err := s.Rows("SELECT music_id, chart, ex_score, dj_level FROM plays WHERE "+pw+" AND dj_level IS NOT NULL", pa...)
+	lv, err := s.Rows("SELECT "+songID("plays")+" AS music_id, chart, ex_score, dj_level FROM plays WHERE "+pw+" AND dj_level IS NOT NULL", pa...)
 	if err != nil {
 		return nil, err
 	}
@@ -521,7 +530,9 @@ func DjPointTotal(rows []map[string]any) map[string]any {
 // PlaysFor lists plays with the derived fields the UI shows; titles come from each play's own
 // music database.
 func (s *Store) PlaysFor(where string, args []any, tail string) ([]Row, error) {
-	out, err := s.Rows("SELECT "+playColumns+" FROM plays WHERE "+where+" "+tail, args...)
+	// the song's current number, so the title and the chart page are the song's as the database has it now
+	columns := strings.Replace(playColumns, " music_id,", " "+songID("plays")+" AS music_id,", 1)
+	out, err := s.Rows("SELECT "+columns+" FROM plays WHERE "+where+" "+tail, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -622,7 +633,7 @@ func (s *Store) Chart(key string, db any, music, chart int64, set string) (map[s
 		return nil, err
 	}
 	out["djpoint"] = val(bestDjPoint(bests[chartKey{music, chart}], nc))
-	if out["plays"], err = s.PlaysFor(where+" AND music_id = ? AND chart = ?", append(args, music, chart), "ORDER BY played_at"); err != nil {
+	if out["plays"], err = s.PlaysFor(where+" AND "+songID("plays")+" = ? AND chart = ?", append(args, music, chart), "ORDER BY played_at"); err != nil {
 		return nil, err
 	}
 	sections, err := s.sections(where, args, music, chart, 20)
@@ -637,7 +648,7 @@ func (s *Store) Chart(key string, db any, music, chart int64, set string) (map[s
 // by their judged note count (assist options drop notes) and the most common count is used.
 func (s *Store) sections(where string, args []any, music, chart int64, recent int) (any, error) {
 	rows, err := s.Rows("SELECT ghost, pgreat, great, good, miss_count FROM plays WHERE "+where+
-		" AND music_id = ? AND chart = ? AND progress = 10000 AND COALESCE(is_death, 0) = 0 "+
+		" AND "+songID("plays")+" = ? AND chart = ? AND progress = 10000 AND COALESCE(is_death, 0) = 0 "+
 		"AND good IS NOT NULL AND miss_count >= 0 AND length(ghost) = 64 ORDER BY played_at DESC",
 		append(args, music, chart)...)
 	if err != nil {
