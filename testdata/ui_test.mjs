@@ -76,6 +76,7 @@ function boot(server, storage = {}) {
   const b = {
     els, ls,
     get state() { return vm.runInContext("state", ctx); },
+    run: (code) => vm.runInContext(code, ctx),
     async go(h) { location.hash = h; await settle(server); },
     async pick(id, v) { els[id].value = v; (els[id].listeners.change || []).forEach((f) => f({target: els[id]})); await settle(server); },
     player() { return b.state.player === b.els["#player"].value ? b.state.player : `${b.state.player} (shown ${b.els["#player"].value})`; },
@@ -104,6 +105,15 @@ function expect(name, got, want) {
 }
 
 const tests = {
+  async "folder names of IIDX 34"() { // 34 moved 33's folder ids up 1, 7, 8 or 9 (it added 9 folders)
+    const p = boot(makeServer(), {});
+    const name = (f, v) => p.run(`folderName(${f}, 0, ${v})`);
+    expect("33 versions", [name(0x13, 33), name(0x34, 33)], [p.run("versionName(0)"), p.run("versionName(33)")]);
+    expect("34 versions", [name(0x1a, 34), name(0x3b, 34), name(0x3c, 34)], [p.run("versionName(0)"), p.run("versionName(33)"), "ZINRAI"]);
+    expect("34 new folders", [name(0x01, 34), name(0x07, 34), name(0x68, 34)], ["VOCALOID RECOMMEND", "LEVEL 7 PICK UP", "RETRY TICKET"]);
+    expect("34 others", [name(0x02, 34), name(0x0d, 34), name(0x19, 34), name(0x60, 34), name(0x61, 34), name(0x6a, 34), name(0xe1, 34), name(0xe2, 34)],
+      ["IIDX RECOMMEND", "LEVEL 1", "LEGGENDARIA", "OMNIMIX (altfix)", "RECOMMEND", "NAME A-D", "ARENA LOSE PLAYLIST", null]);
+  },
   async "someone else finishing a credit does not take the selection"() {
     const s = makeServer();
     s.players = [a(200), b(100)];

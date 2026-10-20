@@ -259,7 +259,7 @@ var VersionNames = map[int64]string{
 	20: "tricoro", 21: "SPADA", 22: "PENDUAL", 23: "copula", 24: "SINOBUZ",
 	25: "CANNON BALLERS", 26: "Rootage", 27: "HEROIC VERSE", 28: "BISTROVER",
 	29: "CastHour", 30: "RESIDENT", 31: "EPOLIS", 32: "Pinky Crush",
-	33: "Sparkle Shower", 80: "INFINITAS",
+	33: "Sparkle Shower", 34: "ZINRAI", 80: "INFINITAS",
 }
 
 type field struct {

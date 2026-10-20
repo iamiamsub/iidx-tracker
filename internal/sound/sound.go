@@ -47,8 +47,9 @@ var chartSlot = [10]int{3, 1, 0, 2, 4, 9, 7, 6, 8, 10}
 
 // NoteCounts counts the notes of every chart in a .1 file; charts the file lacks are absent.
 func NoteCounts(data []byte) (map[int]int64, error) {
-	if len(data) >= 4 && binary.BigEndian.Uint32(data) == ifsSignature {
-		// unreleased songs ship 252-byte IFS stubs in place of every file of their folder
+	if len(data) >= 4 && binary.BigEndian.Uint32(data) == ifsSignature || len(data) == 256 && binary.BigEndian.Uint32(data) == dummySignature {
+		// unreleased songs ship 252-byte IFS stubs in place of every file of their folder; from IIDX 34 also
+		// 256-byte blobs, which also replace the files of songs taken out of the game
 		return nil, i18n.New("譜面の代わりにダミーが置かれています (未収録曲)", "a dummy stands in for the chart (song not included)")
 	}
 	if len(data) < 96 {
@@ -85,6 +86,8 @@ func NoteCounts(data []byte) (map[int]int64, error) {
 // ---- IFS ---------------------------------------------------------------------
 
 const ifsSignature = 0x6CAD8F89
+
+const dummySignature = 0x729B79B1 // the 256-byte dummy files of IIDX 34
 
 type ifsEntry struct {
 	start, size int64

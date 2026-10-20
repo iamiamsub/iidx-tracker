@@ -36,7 +36,7 @@ const VERSIONS = {0: "1st style", 1: "substream", 2: "2nd style", 3: "3rd style"
   17: "SIRIUS", 18: "Resort Anthem", 19: "Lincle", 20: "tricoro", 21: "SPADA", 22: "PENDUAL",
   23: "copula", 24: "SINOBUZ", 25: "CANNON BALLERS", 26: "Rootage", 27: "HEROIC VERSE",
   28: "BISTROVER", 29: "CastHour", 30: "RESIDENT", 31: "EPOLIS", 32: "Pinky Crush",
-  33: "Sparkle Shower", 80: "INFINITAS"};
+  33: "Sparkle Shower", 34: "ZINRAI", 80: "INFINITAS"};
 const JUDGE_COLORS = {PGREAT: "#5cc8ff", GREAT: "#ffd23f", GOOD: "#7ee07e", BAD: "#a970ff", POOR: "#ff5a5a"};
 
 const state = {
@@ -129,9 +129,17 @@ const tierDetail = (tier, sources = {}, level = 12) => { // each rank linked to 
 
 // music_play_log folder_type: the music select folder the song was picked from (bm2dx folder ids,
 // analysis_0819 musicdata.md 4.4). In 段位認定 it is the course number instead.
-function folderName(f, mode) {
+function folderName(f, mode, version) {
   if (f == null || f < 0) return null;
   if (mode === 3) return t("段位 {0}", DAN[f] ?? f);
+  if (version >= 34) { // 34 added folders: its ids are 33's moved up (analysis_v34 category table, 2026-10-20)
+    if (f === 0x01) return "VOCALOID RECOMMEND";
+    if (f >= 0x07 && f <= 0x0c) return `LEVEL ${f} PICK UP`;
+    if (f === 0x3c) return versionName(34);
+    if (f === 0x68) return "RETRY TICKET";
+    if (f > 0xe1) return null; // 34 has no DJ TRAINING or EVENT folders
+    f -= f === 0 ? 0 : f <= 0x06 ? 1 : f <= 0x3b ? 7 : f <= 0x67 ? 8 : 9;
+  }
   const fixed = {0x12: "LEGGENDARIA", 0x35: "LIGHTNING MODEL", 0x36: "EPOLIS RESTORATION", 0x37: "EXTRA",
     0x58: "OMNIMIX (altfix)", 0x59: "RECOMMEND", 0x60: "COMPETITION", 0x69: "BEMANI", 0x6a: "ALL DIFFICULTY",
     0x6b: "ALL DIFFICULTY (CN)", 0x6c: "ALL VERSION", 0x6d: "ALL ALPHABET", 0x6e: "DAN SEARCH RESULT",
@@ -984,7 +992,7 @@ async function viewChart(view, mid, chart) {
     const lost = sizes ? sizes.map((s, i) => 2 * s - g.ghost[i]) : null;
     const target = g.target_score > 0 ? `${GRAPHS[g.graph_type] ?? `#${g.graph_type}`}${SEP}${t("目標 EX {0}", g.target_score)}` +
       (p.ex_score != null ? ` (${p.ex_score >= g.target_score ? "+" : ""}${p.ex_score - g.target_score})` : "") : null;
-    const folder = folderName(g.folder_type, p.mode_type);
+    const folder = folderName(g.folder_type, p.mode_type, p.game_version);
     const hasChatter = g.chatter && g.chatter.some((r) => r.some((v) => v));
     tr.insertAdjacentHTML("afterend", `<tr class="detail"><td colspan="18"><div class="grid" style="width:${tr.closest(".table-wrap").clientWidth - 16}px">
       <div><h2>${t("ゲージ推移")}</h2><div class="chart-box" id="d-gauge"></div></div>
@@ -1349,7 +1357,7 @@ function base64(buf) {
 const CHART_SLOT = [3, 1, 0, 2, 4, 9, 7, 6, 8, 10];
 function noteCounts(buf) {
   const v = new DataView(buf), len = buf.byteLength;
-  if (len >= 4 && v.getUint32(0) === 0x6CAD8F89) {
+  if (len >= 4 && v.getUint32(0) === 0x6CAD8F89 || len === 256 && v.getUint32(0) === 0x729B79B1) { // IFS stub, IIDX 34's blob
     return {error: "譜面の代わりにダミーが置かれています (未収録曲)", error_en: "a dummy stands in for the chart (song not included)"};
   }
   if (len < 96) return {error: ".1 が短すぎます", error_en: "the .1 is too short"};

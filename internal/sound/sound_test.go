@@ -125,6 +125,12 @@ func TestNoteCounts(t *testing.T) {
 	if _, err := NoteCounts([]byte("short")); err == nil {
 		t.Fatal("short file accepted")
 	}
+	// IIDX 34's 256-byte dummy: its first words are not offsets
+	dummy := make([]byte, 256)
+	binary.BigEndian.PutUint32(dummy, dummySignature)
+	if _, err := NoteCounts(dummy); err == nil || !strings.Contains(err.Error(), "ダミー") {
+		t.Fatal("dummy not told apart:", err)
+	}
 }
 
 func TestScanLayers(t *testing.T) {
