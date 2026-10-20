@@ -320,6 +320,18 @@ func TestMusicDB(t *testing.T) {
 	if again, _ := st.ImportMusicDB("music_omni_v13.bin", omni2, str(b["musicdb_id"]), ""); again["duplicate"] != true {
 		t.Fatal(again)
 	}
+	// the next version's omnimix carries the lineage on to that version, and taking it back returns it
+	omni34 := makeMDB([][4]any{stay, news, old, inf, {34001, 34, "zinrai song", []int{0, 3, 7, 10, 0, 0, 3, 7, 10, 0}}})
+	binary.LittleEndian.PutUint32(omni34[4:], 34)
+	next, _ := st.ImportMusicDB("music_omni.bin", omni34, str(b["musicdb_id"]), "")
+	version := func() any { r, _ := st.Row("SELECT game_version FROM musicdbs WHERE id = ?", b["musicdb_id"]); return r["game_version"] }
+	if next["musicdb_id"] != b["musicdb_id"] || next["added"] != 1 || version() != int64(34) || st.DBFor(int64(1), int64(34)) != b["musicdb_id"] {
+		t.Fatal(next, version())
+	}
+	last, _ := st.Row("SELECT MAX(id) AS id FROM musicdb_imports WHERE musicdb_id = ?", b["musicdb_id"])
+	if err := st.DeleteImport(last["id"]); err != nil || version() != int64(33) {
+		t.Fatal(err, version())
+	}
 	// the target is never guessed
 	for _, target := range []string{"", "auto", "999"} {
 		if _, err := st.ImportMusicDB("music_omni_v14.bin", omni2, target, ""); err == nil {

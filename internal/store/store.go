@@ -1217,6 +1217,9 @@ func applyImport(tx *sql.Tx, db, imp any) (added, removed int, err error) {
 		"UPDATE songs SET removed = 1 WHERE musicdb_id = ?2 AND music_id NOT IN (SELECT music_id FROM import_songs WHERE import_id = ?1)",
 		"INSERT OR REPLACE INTO songs SELECT ?2, music_id, title, title_ascii, genre, artist, subtitle, version, levels, ?1, 0 " +
 			"FROM import_songs WHERE import_id = ?1",
+		// the lineage is the version of its newest songs: the next version's omnimix imported into it carries it on
+		"UPDATE musicdbs SET game_version = COALESCE((SELECT MAX(version) FROM songs WHERE musicdb_id = ?2 AND removed = 0 " +
+			"AND version < 80), game_version) WHERE id = ?2",
 	} {
 		if _, err = tx.Exec(q, imp, db); err != nil {
 			return
