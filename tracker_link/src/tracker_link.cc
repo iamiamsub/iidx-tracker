@@ -116,7 +116,7 @@ namespace
     // for music.reg lies inside it (iidx_id at +0, the rest as music.reg sends it).
     auto player_block = static_cast<std::uint8_t*>(nullptr);
     auto play_log_offset = std::int32_t {};
-    auto constexpr player_block_stride = 0x3b103a0;
+    auto player_block_stride = std::int32_t {}; // 0x3b103a0 on 33, 0x3e66db8 on 34
     auto constexpr play_log_size = 0x658;
 
     auto history_hook = SafetyHookInline {};
@@ -704,23 +704,29 @@ namespace
         play_state = reinterpret_cast<play_state_fn>(memory::follow(graph));
         player_graph = reinterpret_cast<player_graph_fn>(memory::follow(graph + 11));
 
-        // MusicPlayLog_Fill (the first of two alike functions): IMUL RBX,RAX,3B103A0h ;
-        // LEA RAX,[g_PlayerBlock] ; ADD RBX,RAX ; MOV EAX,[RBX+3B10398h] ; TEST EAX,EAX ; JNE ;
-        // LEA RCX,[RBX + music_play_log] - the block the iidx_id is copied into.
+        // MusicPlayLog_Fill (the first of two alike functions): IMUL RBX,RAX,<block size> ;
+        // LEA RAX,[g_PlayerBlock] ; ADD RBX,RAX ; MOV EAX,[RBX+x] ; TEST EAX,EAX ; JNE ;
+        // LEA RCX,[RBX + music_play_log] - the block the iidx_id is copied into. The block grows
+        // with the score table (34), the log inside it keeps its layout.
         auto const block = memory::find(bm2dx,
-            "48 69 D8 A0 03 B1 03 [48] 8D 05 ? ? ? ? 48 03 D8 8B 83 98 03 B1 03 85 C0 75 ? 48 8D 8B ? ? ? ?");
+            "48 69 D8 ? ? ? ? [48] 8D 05 ? ? ? ? 48 03 D8 8B 83 ? ? ? ? 85 C0 75 ? 48 8D 8B ? ? ? ?");
         player_block = memory::follow(block);
+        player_block_stride = *reinterpret_cast<const std::int32_t*>(block - 4);
         play_log_offset = *reinterpret_cast<const std::int32_t*>(block + 23);
 
         // PlayerData_AppendMusicHistory(side, music, style, chart, ex, lamp, dj level, no save),
         // called for every side at the end of MusicReg_Dispatch - also when 2dxtra skipped music.reg.
         auto const history = memory::find(bm2dx,
-            "48 83 EC 28 45 8B D0 44 8B DA E8 ? ? ? ? 85 C0 0F 85 ? ? ? ? 48 63 C1 48 69 C8 A0 03 B1 03 "
+            "48 83 EC 28 45 8B D0 44 8B DA E8 ? ? ? ? 85 C0 0F 85 ? ? ? ? 48 63 C1 48 69 C8 ? ? ? ? "
             "48 8D 05 ? ? ? ? 83 BC 01 ? ? ? ? 01 0F 84 ? ? ? ? 80 BC 01 ? ? ? ? 00 0F 84 ? ? ? ? "
             "4C 8D 80 ? ? ? ? 4C 03 C1 49 63 80 ? ? ? ? 83 F8 09");
 
-        // Xrpc_PcSave_Serialize(request, node)
-        auto const pc_save = memory::find(bm2dx, "48 89 54 24 10 48 89 4C 24 08 48 81 EC 28 04 00 00");
+        // Xrpc_PcSave_Serialize(request, node): its frame size changes between builds, so the
+        // start of the body (the request's +0x70 and a byte of it, then the first attribute) too.
+        auto const pc_save = memory::find(bm2dx, "48 89 54 24 10 48 89 4C 24 08 48 81 EC ? ? 00 00 48 8B 05 ? ? ? ? "
+            "48 33 C4 48 89 84 24 ? ? 00 00 48 8B 84 24 ? ? 00 00 48 89 84 24 ? ? 00 00 48 8B 84 24 ? ? 00 00 "
+            "48 8B 40 70 48 89 44 24 38 48 8B 8C 24 ? ? 00 00 FF 15 ? ? ? ? 48 89 44 24 30 48 8B 44 24 38 "
+            "0F B6 80 ? ? 00 00 88 44 24 48 48 8B 44 24 38 48 83 C0 08 4C 8B C8 4C 8D 05");
 
         history_hook = safetyhook::create_inline(history, history_detour);
         pc_save_hook = safetyhook::create_inline(pc_save, pc_save_detour);
